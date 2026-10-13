@@ -55,6 +55,7 @@ public class KuroCloudGameContext : IKuroCloudGameContext
     {
         var http = CloudGameDataHelper.CreateWebCloudClient(session);
         var bizData = CloudGameDataHelper.CreateCloudBizData(
+            session,
             nodes.Select(x => new BizCloudNode()
             {
                 NodeId = x.NodeList.First().NodeId,
@@ -64,6 +65,7 @@ public class KuroCloudGameContext : IKuroCloudGameContext
         var bizString = JsonSerializer.Serialize(bizData, CloudGameContext.Default.CloudBizData);
         var launchOption = CloudGameDataHelper.BuildLaunchOption(session, options);
         var paramData = CloudGameDataHelper.CreateWebLinkParameters(
+            session,
             launchOption.Quality.DPI,
             launchOption.Quality.Width,
             launchOption.Quality.Height,

@@ -340,7 +340,14 @@ public sealed partial class CloudGameingViewModel:ViewModelBase
             }, CloudGameContext.Default.BridgeConfig
         );
 
-        return CloudGameBuilder.BuildDefaultBridgeHtml(scriptUrlJson, dispatchMessageJson, bridgeConfigJson, storageItemsJson);
+        return CloudGameBuilder.BuildDefaultBridgeHtml(
+            scriptUrlJson,
+            dispatchMessageJson,
+            bridgeConfigJson,
+            storageItemsJson,
+            JsonSerializer.Serialize(option.ClientPlatform, CloudGameContext.Default.String),
+            JsonSerializer.Serialize(option.ClientDevice, CloudGameContext.Default.String)
+        );
     }
 
 

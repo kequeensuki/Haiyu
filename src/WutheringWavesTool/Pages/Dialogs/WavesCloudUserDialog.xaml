@@ -38,7 +38,16 @@
                                 <RowDefinition />
                                 <RowDefinition />
                             </Grid.RowDefinitions>
-                            <TextBlock HorizontalAlignment="Left" Text="{x:Bind Phone, Mode=OneWay}" />
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBlock VerticalAlignment="Center" Text="{x:Bind Phone, Mode=OneWay}" />
+                                <FontIcon
+                                    VerticalAlignment="Center"
+                                    FontFamily="Segoe Fluent Icons"
+                                    FontSize="12"
+                                    Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                    Glyph="&#xE734;"
+                                    Visibility="{x:Bind HasAndroidCredential, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}" />
+                            </StackPanel>
                             <TextBlock
                                 Grid.Row="1"
                                 FontSize="12"
@@ -72,6 +81,12 @@
                 Content="{x:Bind helper:LanguageService.GetString('Display_Apply')}"
                 CornerRadius="8"
                 Style="{ThemeResource AccentButtonStyle}" />
+            <Button
+                MinWidth="100"
+                Padding="12,8"
+                Command="{x:Bind ViewModel.ShowAndroidCredentialCommand}"
+                Content="{x:Bind helper:LanguageService.GetString('WavesCloud_AndroidCredentialEntry')}"
+                CornerRadius="8" />
             <Button
                 MinWidth="100"
                 Padding="12,8"

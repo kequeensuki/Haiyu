@@ -31,6 +31,7 @@ public interface IDialogManager
     public Task ShowWavesCloudSettingAsync(GameType ype);
 
     Task ShowCloudUserManagerDialogAsync();
+    Task ShowCloudAndroidCredentialDialogAsync(Waves.Api.Models.CloudGame.CloudGameLoginData user);
     Task ShowGameResourceV2DialogAsync(string contextName);
     public Task ShowDeleteGameResource(string contentName);
     public void CloseDialog();

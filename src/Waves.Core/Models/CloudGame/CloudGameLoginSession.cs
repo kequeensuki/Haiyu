@@ -1,7 +1,7 @@
 namespace Waves.Core.Models.CloudGame;
 
 /// <summary>
-/// 云游戏登录快照
+/// 云游戏登录会话
 /// </summary>
 public partial class CloudGameLoginSession:ObservableObject
 {
@@ -20,7 +20,32 @@ public partial class CloudGameLoginSession:ObservableObject
 
     public DateTime SaveTime { get; internal set; }
 
+    /// <summary>
+    /// 当前会话的客户端形态：安卓版凭据存在时为 Android，否则为官方网页版。
+    /// 决定请求头（x-os / User-Agent / Cookie token）与启动参数（bizData / cmdLine）取哪一套。
+    /// </summary>
+    public CloudClientKind ClientKind =>
+        OrginData?.HasAndroidCredentials == true
+            ? CloudClientKind.Android
+            : CloudClientKind.Web;
+
     public string GetId() => $"{OrginData.Username}";
+}
+
+/// <summary>
+/// 云鸣潮会话的客户端形态
+/// </summary>
+public enum CloudClientKind
+{
+    /// <summary>
+    /// 官方网页版（web-pc / x-os=web）
+    /// </summary>
+    Web = 0,
+
+    /// <summary>
+    /// 安卓版（platform=Android / x-os 由安卓值替换）
+    /// </summary>
+    Android = 1,
 }
 
 /// <summary>

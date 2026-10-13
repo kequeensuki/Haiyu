@@ -14,8 +14,10 @@ public static class CloudGameBuilder
     /// <param name="dispatchMessageJson"></param>
     /// <param name="bridgeConfigJson"></param>
     /// <param name="storageItemsJson"></param>
+    /// <param name="clientPlatformJson">桥页回传给游戏侧的 Platform 字段（Windows / Android）</param>
+    /// <param name="clientDeviceJson">桥页回传给游戏侧的 Device 字段（安卓 WebView UA；空串表示用 navigator.userAgent）</param>
     /// <returns></returns>
-    public static string BuildDefaultBridgeHtml(string scriptUrlJson,string dispatchMessageJson,string bridgeConfigJson,string storageItemsJson)
+    public static string BuildDefaultBridgeHtml(string scriptUrlJson,string dispatchMessageJson,string bridgeConfigJson,string storageItemsJson,string clientPlatformJson = "\"Windows\"",string clientDeviceJson = "\"\"")
     {
         return $$"""
 <!DOCTYPE html>
@@ -478,8 +480,17 @@ public static class CloudGameBuilder
                 scriptUrl: {{scriptUrlJson}},
                 dispatchMessage: {{dispatchMessageJson}},
                 bridgeConfig: {{bridgeConfigJson}},
-                storageItems: {{storageItemsJson}}
+                storageItems: {{storageItemsJson}},
+                clientPlatform: {{clientPlatformJson}},
+                clientDevice: {{clientDeviceJson}}
             };
+
+            const clientPlatform = typeof payload.clientPlatform === "string" && payload.clientPlatform
+                ? payload.clientPlatform
+                : "Windows";
+            const clientDevice = typeof payload.clientDevice === "string" && payload.clientDevice
+                ? payload.clientDevice
+                : "";
 
             enhancementState.enabled = Boolean(payload?.bridgeConfig?.enableImageEnhancement);
 
@@ -1248,7 +1259,7 @@ public static class CloudGameBuilder
                 const qualityDpi = Number(payload.bridgeConfig.dpi) || 120;
                 const payloadData = {
                     TraceId: loginInfo.TraceId,
-                    Platform: "Windows",
+                    Platform: clientPlatform,
                     Fps: qualityFps,
                     Dpi: qualityDpi,
                     DeviceResolution: {
@@ -1259,11 +1270,11 @@ public static class CloudGameBuilder
                         Width: screenResolution?.width || physical.width,
                         Height: screenResolution?.height || physical.height
                     },
-                    Device: navigator.userAgent,
+                    Device: clientDevice || navigator.userAgent,
                     LoginInfo: loginInfo
                 };
 
-                sendMessageWithKey("SetIsWebPlatform", "1");
+                sendMessageWithKey("SetIsWebPlatform", clientPlatform === "Android" ? "0" : "1");
                 return sendMessageWithKey("OnCloudGameLoginPreLaunch", JSON.stringify(payloadData));
             };
 
@@ -1280,7 +1291,7 @@ public static class CloudGameBuilder
                     sentLogin = sendPreLaunchUserData(lastPreLaunchResolution);
                     sentWebPlatform = sentLogin;
                 } else {
-                    sentWebPlatform = sendMessageWithKey("SetIsWebPlatform", "1");
+                    sentWebPlatform = sendMessageWithKey("SetIsWebPlatform", clientPlatform === "Android" ? "0" : "1");
                     sentLogin = sendUserData();
                     // Until code 6254 arrives the allocation mode is unknown.
                     // Send the pre-launch envelope as well; the cloud client only

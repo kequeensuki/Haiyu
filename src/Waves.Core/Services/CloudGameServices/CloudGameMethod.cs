@@ -28,4 +28,14 @@ public class CloudGameMethod
     public const int MaxStreamWidth = 1920;
     public const int MaxStreamHeight = 1080;
 
+    /// <summary>
+    /// Login/Login 的 platform：官方网页版客户端值。
+    /// </summary>
+    public const string WebPlatform = "web-pc";
+
+    /// <summary>
+    /// Login/Login 的 appVersion：官方网页版客户端值。
+    /// </summary>
+    public const string WebAppVersion = "1.0.6";
+
 }

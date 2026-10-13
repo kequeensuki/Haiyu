@@ -53,15 +53,36 @@ partial class WavesCloudGameService
 
     private bool HasCurrentSession =>
         _currentData is not null
-        && TokenData is not null
-        && AccessData is not null
-        && EndLoginData is not null;
+        && (_currentData.HasAndroidCredentials
+            ? IsAndroidSession
+            : TokenData is not null && AccessData is not null && EndLoginData is not null);
+
+    /// <summary>
+    /// 当前会话是否为安卓凭据直连形态（直接使用安卓版 token，不经过网页版三步换 token）。
+    /// </summary>
+    private bool IsAndroidSession =>
+        _currentData is not null && _currentData.HasAndroidCredentials;
 
     private CloudGameLoginSession GetSession()
     {
         if (!HasCurrentSession)
         {
             throw new InvalidOperationException("当前云游戏账号的登录会话尚未建立。");
+        }
+
+        if (IsAndroidSession)
+        {
+            // 安卓直连：不持有网页版 PhoneToken/AccessData/EndLoginData，
+            // x-token 等字段由 CloudGameDataHelper 按 ClientKind 从 OrginData 的安卓凭据取值。
+            return new CloudGameLoginSession
+            {
+                OrginData = _currentData!,
+                PhoneToken = TokenData,
+                AccessData = AccessData,
+                EndLoginData = EndLoginData,
+                TraceId = TrackerId ?? Guid.NewGuid().ToString("N").ToUpperInvariant(),
+                SaveTime = DateTime.Now,
+            };
         }
 
         return new CloudGameLoginSession
@@ -81,7 +102,15 @@ partial class WavesCloudGameService
         {
             return false;
         }
-        
+
+        // 安卓直连：直接使用安卓版云鸣潮产出的会话 token，跳过网页版三步换 token。
+        // 服务端将本会话视为安卓版客户端，同账号的安卓版云鸣潮不会被互踢下线。
+        if (_currentData.HasAndroidCredentials)
+        {
+            TrackerId = Guid.NewGuid().ToString("N").ToUpperInvariant();
+            return true;
+        }
+
         var phoneResult = await RefreshPhoneTokenAsync(_currentData, cancellationToken);
         if (phoneResult?.Code != 0 || phoneResult.Data is null)
         {

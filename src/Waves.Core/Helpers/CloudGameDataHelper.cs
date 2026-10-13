@@ -10,22 +10,72 @@ public static class CloudGameDataHelper
     public const string MainUrl = "https://mc.kurogames.com/cloud/index.html";
     public static void BuildLauncheOption(CloudGameLoginSession login) { }
 
+    /// <summary>
+    /// 当前会话的 API User-Agent：安卓凭据存在时用安卓 OkHttp UA，否则用官方网页 Electron UA。
+    /// </summary>
+    private static string GetApiUserAgent(CloudGameLoginSession login) =>
+        login.ClientKind == CloudClientKind.Android
+            ? AndroidCloudGameMethod.UserAgent
+            : CloudGameMethod.OfficialWelinkOsVersion;
+
+    /// <summary>
+    /// 当前会话的 x-os 头：安卓主业务 API 实测不带 x-os（仅 x-token / x-b3-traceid），返回 null 表示不添加。
+    /// </summary>
+    private static string? GetXOs(CloudGameLoginSession login) =>
+        login.ClientKind == CloudClientKind.Android ? null : "web";
+
+    /// <summary>
+    /// 当前会话的会话 token（x-token / Cookie token）：
+    /// 安卓会话直接使用安卓版 Login/Login 产出的 token，不再使用网页版 token。
+    /// </summary>
+    private static string GetSessionToken(CloudGameLoginSession login) =>
+        login.ClientKind == CloudClientKind.Android
+            ? login.OrginData.AndroidToken!
+            : login.EndLoginData.Token;
+
+    /// <summary>
+    /// 桥页回传给游戏侧的 SDK token（OnCloudGameLogin 的 Token 字段）：
+    /// 安卓会话使用安卓版 SDK 的 access_token。
+    /// </summary>
+    private static string GetSdkToken(CloudGameLoginSession login) =>
+        login.ClientKind == CloudClientKind.Android
+            ? login.OrginData.AndroidSdkToken ?? string.Empty
+            : login.AccessData.AccessToken;
+
+    /// <summary>
+    /// 当前会话的设备标识（traceId / 桥页 useMcCloudGameDid）。
+    /// </summary>
+    private static string GetDeviceId(CloudGameLoginSession login) =>
+        login.ClientKind == CloudClientKind.Android
+            ? login.OrginData.AndroidDid ?? string.Empty
+            : login.OrginData.LoginDid ?? string.Empty;
+
     public static Dictionary<string, string> BuildWebStorageItems(CloudGameLoginSession login)
     {
+        var isAndroid = login.ClientKind == CloudClientKind.Android;
+        var sessionToken = GetSessionToken(login);
+        var sdkToken = GetSdkToken(login);
+        var deviceId = GetDeviceId(login);
+        var uniqueId = isAndroid
+            ? login.OrginData.AndroidUniqueId ?? login.EndLoginData?.UniqueId
+            : login.EndLoginData?.UniqueId;
+        var phone = login.PhoneToken?.Phone ?? login.OrginData.Phone;
+        var sdkOpenid = login.PhoneToken?.Id ?? login.OrginData.Id;
+
         var sdkLoginInfo = new CloudSdkLoginInfo
         {
             Cuid = login.OrginData.Cuid,
-            Token = login.AccessData.AccessToken,
+            Token = sdkToken,
             Username = login.OrginData.Username,
-            Phone = login.PhoneToken.Phone,
-            SdkOpenid = login.PhoneToken.Id,
+            Phone = phone,
+            SdkOpenid = sdkOpenid,
         };
 
         var appLoginInfo = new CloudAppLoginInfo
         {
-            Token = login.EndLoginData.Token,
-            UniqueId = login.EndLoginData.UniqueId,
-            WalletData = login.EndLoginData.WalletData,
+            Token = sessionToken,
+            UniqueId = uniqueId,
+            WalletData = login.EndLoginData?.WalletData,
         };
 
         var appStore = new CloudGameAppStore
@@ -36,18 +86,18 @@ public static class CloudGameDataHelper
 
         return new Dictionary<string, string>()
         {
-            { "wl_cloud_game_userId", login.EndLoginData.UniqueId },
+            { "wl_cloud_game_userId", uniqueId ?? string.Empty },
             { $"useMcCloudGameUserSession@Official#{login.OrginData.Id}", "1-" },
             { "sdkuserid", login.OrginData.Sdkuserid },
             { "username", login.OrginData.Username },
             { "cuid", login.OrginData.Cuid },
-            { "useMcCloudGameDid", login.OrginData.LoginDid },
+            { "useMcCloudGameDid", deviceId },
             { "welink_cloud_game_uuid", Guid.NewGuid().ToString().ToUpperInvariant() },
             {
                 "sdkLoginInfo",
                 JsonSerializer.Serialize(sdkLoginInfo, CloudGameContext.Default.CloudSdkLoginInfo)
             },
-            { "token", login.EndLoginData.Token },
+            { "token", sessionToken },
             { $"McCloudSessionId", Guid.NewGuid().ToString() },
             {
                 "useMcCloudGameAppStore",
@@ -58,10 +108,10 @@ public static class CloudGameDataHelper
             { "code", login.OrginData.Code },
             { "autoToken", login.OrginData.AutoToken },
             { "phoneToken", login.OrginData.PhoneToken },
-            { "refreshToken", login.PhoneToken.PhoneToken },
-            { "accessToken", login.AccessData.AccessToken },
-            { "access_token", login.AccessData.AccessToken },
-            { "refresh_token", login.PhoneToken.PhoneToken },
+            { "refreshToken", login.PhoneToken?.PhoneToken },
+            { "accessToken", sdkToken },
+            { "access_token", sdkToken },
+            { "refresh_token", login.PhoneToken?.PhoneToken },
             {
                 "__KrSDK_SYS_CONF__",
                 """
@@ -75,37 +125,38 @@ public static class CloudGameDataHelper
 
     private static string BuildKrSdkJson(CloudGameLoginSession session)
     {
+        var isAndroid = session.ClientKind == CloudClientKind.Android;
         KRSDK sdk = new KRSDK()
         {
             Lang = "zh-Hans",
             GameId = "G152",
-            PkgId = "A1493",
-            Pkg = "com.kurogame.mingchao",
-            ChannelId = "211",
+            PkgId = isAndroid ? AndroidCloudGameMethod.ProductId : "A1493",
+            Pkg = isAndroid ? AndroidCloudGameMethod.Pkg : "com.kurogame.mingchao",
+            ChannelId = isAndroid ? AndroidCloudGameMethod.ChannelId : "211",
             ClientId = "vvkewnskrxxwfo0yi61cy24l",
             ClientSecret = "g9ej0i1jf3y68wchb0ncm266",
             ViewType = string.Empty,
             RoleData = new(),
             LoginConfig = new LoginConfig()
             {
-                Age = session.PhoneToken.Age,
-                AutoToken = session.PhoneToken.AutoToken,
-                AutoTokenStatus = session.PhoneToken.AutoTokenStatus,
+                Age = session.PhoneToken?.Age ?? 0,
+                AutoToken = session.PhoneToken?.AutoToken,
+                AutoTokenStatus = session.PhoneToken?.AutoTokenStatus ?? false,
                 BindDevStat = 0,
-                Code = session.PhoneToken.Code,
-                Cuid = session.PhoneToken.Cuid,
-                FirstLgn = session.PhoneToken.FirstLgn,
-                Id = session.PhoneToken.Id,
-                IdStat = session.PhoneToken.IdStat,
-                LoginType = session.PhoneToken.LoginType,
-                Phone = session.PhoneToken.Phone,
-                PhoneCheck = session.PhoneToken.PhoneCheck,
-                PhoneToken = session.PhoneToken.PhoneToken,
-                SdkOpenid = session.PhoneToken.Id,
-                Sdkuserid = session.PhoneToken.Sdkuserid,
-                ShowPaw = session.PhoneToken.ShowPaw,
-                Token = session.AccessData.AccessToken,
-                Username = session.PhoneToken.Username,
+                Code = session.PhoneToken?.Code,
+                Cuid = session.PhoneToken?.Cuid,
+                FirstLgn = session.PhoneToken?.FirstLgn ?? 0,
+                Id = session.PhoneToken?.Id ?? 0,
+                IdStat = session.PhoneToken?.IdStat ?? 0,
+                LoginType = session.PhoneToken?.LoginType ?? 0,
+                Phone = session.PhoneToken?.Phone,
+                PhoneCheck = session.PhoneToken?.PhoneCheck ?? 0,
+                PhoneToken = session.PhoneToken?.PhoneToken,
+                SdkOpenid = session.PhoneToken?.Id ?? 0,
+                Sdkuserid = session.PhoneToken?.Sdkuserid,
+                ShowPaw = session.PhoneToken?.ShowPaw ?? false,
+                Token = GetSdkToken(session),
+                Username = session.PhoneToken?.Username,
             },
         };
         return JsonSerializer.Serialize(sdk, CloudGameContext.Default.KRSDK);
@@ -116,23 +167,23 @@ public static class CloudGameDataHelper
         PKGData data = new PKGData()
         {
             Age = 22,
-            AutoToken = session.PhoneToken.AutoToken,
-            AutoTokenStatus = session.PhoneToken.AutoTokenStatus,
-            BindDevStat = session.PhoneToken.BindDevStat,
-            Code = session.PhoneToken.Code,
-            Cuid = session.PhoneToken.Cuid,
-            FirstLgn = session.PhoneToken.FirstLgn,
-            Id = session.PhoneToken.Id,
-            IdStat = session.PhoneToken.IdStat,
-            LoginType = session.PhoneToken.LoginType,
-            Phone = session.PhoneToken.Phone,
-            PhoneCheck = session.PhoneToken.PhoneCheck,
-            PhoneToken = session.PhoneToken.PhoneToken,
-            SdkOpenid = session.PhoneToken.Id,
-            Sdkuserid = session.PhoneToken.Sdkuserid,
-            ShowPaw = session.PhoneToken.ShowPaw,
-            Token = session.AccessData.AccessToken,
-            Username = session.PhoneToken.Username,
+            AutoToken = session.PhoneToken?.AutoToken,
+            AutoTokenStatus = session.PhoneToken?.AutoTokenStatus ?? false,
+            BindDevStat = session.PhoneToken?.BindDevStat ?? 0,
+            Code = session.PhoneToken?.Code,
+            Cuid = session.PhoneToken?.Cuid,
+            FirstLgn = session.PhoneToken?.FirstLgn ?? 0,
+            Id = session.PhoneToken?.Id ?? 0,
+            IdStat = session.PhoneToken?.IdStat ?? 0,
+            LoginType = session.PhoneToken?.LoginType ?? 0,
+            Phone = session.PhoneToken?.Phone,
+            PhoneCheck = session.PhoneToken?.PhoneCheck ?? 0,
+            PhoneToken = session.PhoneToken?.PhoneToken,
+            SdkOpenid = session.PhoneToken?.Id ?? 0,
+            Sdkuserid = session.PhoneToken?.Sdkuserid,
+            ShowPaw = session.PhoneToken?.ShowPaw ?? false,
+            Token = GetSdkToken(session),
+            Username = session.PhoneToken?.Username,
         };
         return JsonSerializer.Serialize(data, CloudGameContext.Default.PKGData);
     }
@@ -153,7 +204,7 @@ public static class CloudGameDataHelper
 
         return new Dictionary<string, string>()
         {
-            { "token", login.EndLoginData.Token },
+            { "token", GetSessionToken(login) },
             { "autoToken", autoToken },
             { "phoneToken", phoneToken },
             { "username", login.OrginData.Username },
@@ -168,12 +219,13 @@ public static class CloudGameDataHelper
         StreamQualityOptions qualityOptions
     )
     {
+        var isAndroid = session.ClientKind == CloudClientKind.Android;
         return new BrowserSessionLaunchOptions
         {
             BootstrapUrl = "https://mc.kurogames.com/cloud/index.html",
-            AccessToken = session.AccessData.AccessToken,
-            RefreshToken = session.PhoneToken.PhoneToken,
-            CloudApiToken = session.EndLoginData.Token,
+            AccessToken = GetSdkToken(session),
+            RefreshToken = session.PhoneToken?.PhoneToken,
+            CloudApiToken = GetSessionToken(session),
             CookieDomain = ".kurogames.com",
             AdditionalHeaders = new Dictionary<string, string>(),
             Cookies = BuildCookieItems(session),
@@ -188,7 +240,23 @@ public static class CloudGameDataHelper
             ],
             Quality = qualityOptions,
             StreamDpi = qualityOptions.DPI,
+            ClientPlatform = isAndroid
+                ? AndroidCloudGameMethod.Platform
+                : "Windows",
+            ClientDevice = isAndroid ? GetAndroidWebViewUserAgent(session) : string.Empty,
         };
+    }
+
+    /// <summary>
+    /// 安卓凭据会话下，桥页回传给游戏侧的 Device 字段（安卓 WebView UA 形态）。
+    /// </summary>
+    private static string GetAndroidWebViewUserAgent(CloudGameLoginSession session)
+    {
+        var model =
+            session.OrginData.AndroidDeviceModel ?? AndroidCloudGameMethod.DefaultDeviceModel;
+        var version = session.OrginData.AndroidClientVersion ?? "17";
+        return $"Mozilla/5.0 (Linux; Android {version}; {model} Build/TP1A.220624.014; wv) "
+            + "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/145.0.0.0 Mobile Safari/537.36";
     }
 
     /// <summary>
@@ -254,36 +322,67 @@ public static class CloudGameDataHelper
             BaseAddress = new Uri("https://cloud-game-sh.aki-game.com/"),
         };
 
-        client.DefaultRequestHeaders.Add("Kr-Ver", "1.9.0");
-        client.DefaultRequestHeaders.Add("x-token", session.EndLoginData.Token);
+        // 安卓主业务 API 实测只带 x-token + x-b3-traceid（OkHttp UA），无 Kr-Ver/Referer/Origin/x-os/Cookie
+        if (session.ClientKind == CloudClientKind.Android)
+        {
+            client.DefaultRequestHeaders.Add("x-token", GetSessionToken(session));
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(GetApiUserAgent(session));
+        }
+        else
+        {
+            client.DefaultRequestHeaders.Add("Kr-Ver", "1.9.0");
+            client.DefaultRequestHeaders.Add("x-token", GetSessionToken(session));
+            client.DefaultRequestHeaders.Referrer = new Uri(
+                "https://mc.kurogames.com/cloud/index.html"
+            );
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Code/1.120.0 Chrome/142.0.7444.265 Electron/39.8.8 Safari/537.36"
+            );
+            client.DefaultRequestHeaders.TryAddWithoutValidation(
+                "Origin",
+                "https://mc.kurogames.com"
+            );
+            client.DefaultRequestHeaders.TryAddWithoutValidation(
+                "Cookie",
+                string.Join(
+                    ";",
+                    CloudGameDataHelper
+                        .BuildCookieItems(session)
+                        .Select(pair => $"{pair.Key}={pair.Value}")
+                )
+            );
+            client.DefaultRequestHeaders.TryAddWithoutValidation("x-os", "web");
+        }
         client.DefaultRequestHeaders.Accept.Add(
             new MediaTypeWithQualityHeaderValue("application/json")
         );
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/plain"));
         client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("zh-CN,zh;q=0.9");
-        client.DefaultRequestHeaders.Referrer = new Uri(
-            "https://mc.kurogames.com/cloud/index.html"
-        );
-        client.DefaultRequestHeaders.UserAgent.ParseAdd(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Code/1.120.0 Chrome/142.0.7444.265 Electron/39.8.8 Safari/537.36"
-        );
-        client.DefaultRequestHeaders.TryAddWithoutValidation("Origin", "https://mc.kurogames.com");
-        client.DefaultRequestHeaders.TryAddWithoutValidation(
-            "Cookie",
-            string.Join(
-                ";",
-                CloudGameDataHelper
-                    .BuildCookieItems(session)
-                    .Select(pair => $"{pair.Key}={pair.Value}")
-            )
-        );
-        client.DefaultRequestHeaders.TryAddWithoutValidation("x-os", "web");
         client.DefaultRequestHeaders.Add("x-b3-traceid",session.TraceId);
         return client;
     }
 
-    public static CloudBizData CreateCloudBizData(IEnumerable<BizCloudNode> nodes)
+    /// <summary>
+    /// 构建 CommonStartGame 的 bizData：按会话形态切换 os/osVer/osCategory/clientVer。
+    /// </summary>
+    public static CloudBizData CreateCloudBizData(
+        CloudGameLoginSession session,
+        IEnumerable<BizCloudNode> nodes
+    )
     {
+        if (session.ClientKind == CloudClientKind.Android)
+        {
+            var deviceModel =
+                session.OrginData.AndroidDeviceModel ?? AndroidCloudGameMethod.DefaultDeviceModel;
+            var clientVer =
+                session.OrginData.AndroidClientVersion
+                ?? AndroidCloudGameMethod.DefaultAppVersion;
+            return new CloudBizData(deviceModel, clientVer, nodes)
+            {
+                Os = AndroidCloudGameMethod.Os,
+                OsCategory = AndroidCloudGameMethod.OsCategory,
+            };
+        }
         return new CloudBizData(
             "Code/1.120.0 Chrome/142.0.7444.265 Electron/39.8.8 Safari/537.36",
             CloudGameMethod.WelinkClientVersion,
@@ -291,7 +390,11 @@ public static class CloudGameDataHelper
         );
     }
 
+    /// <summary>
+    /// 构建 Welink 启动参数：安卓会话使用安卓版 cmdLine 与 wlResourceData.version。
+    /// </summary>
     public static WelinkStartParameters CreateWebLinkParameters(
+        CloudGameLoginSession session,
         int dpi,
         int maxWidth,
         int maxHeight,
@@ -303,15 +406,39 @@ public static class CloudGameDataHelper
         CloudGameNode node
     )
     {
+        var resolution = GetPreferredResolution(dpi, maxWidth, maxHeight);
+        var version = "v1.0";
+        string cmdLine;
+        if (session.ClientKind == CloudClientKind.Android)
+        {
+            var deviceModel =
+                session.OrginData.AndroidDeviceModel ?? AndroidCloudGameMethod.DefaultDeviceModel;
+            version =
+                session.OrginData.AndroidClientVersion
+                ?? AndroidCloudGameMethod.DefaultAppVersion;
+            cmdLine = string.Format(
+                AndroidCloudGameMethod.CmdLineTemplate,
+                fps,
+                dpi,
+                resolution,
+                deviceModel
+            );
+        }
+        else
+        {
+            cmdLine =
+                $"-CloudGamePlatform=Windows -fps={fps} -Dpi={dpi} -DeviceScreenResolution={resolution} -Device=Windows -SkipSplash -IsWeb=1";
+        }
+
         return new WelinkStartParameters(
             WelinkTenantKey,
             WelinkGameId,
-            GetPreferredResolution(dpi, maxWidth, maxHeight),
+            resolution,
             bitRate,
             fps,
             codeType,
-            "v1.0",
-            $"-CloudGamePlatform=Windows -fps={fps} -Dpi={dpi} -DeviceScreenResolution={GetPreferredResolution(dpi, maxWidth, maxHeight)} -Device=Windows -SkipSplash -IsWeb=1",
+            version,
+            cmdLine,
             bizData,
             nodes,
             node

@@ -32,6 +32,18 @@ namespace Waves.Core.Models.CloudGame
 
         public string DispatchMessage { get; set; }
 
+        /// <summary>
+        /// 桥页 OnCloudGameLoginPreLaunch 回传给游戏侧的 Platform 字段
+        /// （网页版 Windows；安卓凭据会话 Android，避免云端识别为 Web 端）。
+        /// </summary>
+        public string ClientPlatform { get; init; } = "Windows";
+
+        /// <summary>
+        /// 桥页 OnCloudGameLoginPreLaunch 回传给游戏侧的 Device 字段（navigator.userAgent 的替换值；
+        /// 安卓凭据会话使用安卓 WebView UA）。
+        /// </summary>
+        public string ClientDevice { get; init; } = string.Empty;
+
         public bool IsComplete { get; internal set; }
 
         internal BrowserSessionLaunchOptions Clone()
@@ -50,6 +62,8 @@ namespace Waves.Core.Models.CloudGame
                 StorageItems = this.StorageItems,
                 StreamDpi = this.StreamDpi,
                 StreamOptions = this.StreamOptions,
+                ClientPlatform = this.ClientPlatform,
+                ClientDevice = this.ClientDevice,
             };
         }
     }

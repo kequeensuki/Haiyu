@@ -173,8 +173,8 @@ public sealed partial class WavesCloudGameService : IWavesCloudGameService
             LoginType = 1,
             UserId = data.Id.ToString(),
             UserName = data.Username,
-            Platform = "web-pc",
-            AppVersion = "1.0.6",
+            Platform = CloudGameMethod.WebPlatform,
+            AppVersion = CloudGameMethod.WebAppVersion,
             DeviceId = data.LoginDid,
         };
         var json = JsonSerializer.Serialize(req, CloudGameContext.Default.EndLoginRequest);
@@ -343,6 +343,17 @@ public sealed partial class WavesCloudGameService : IWavesCloudGameService
     )
     {
         HttpRequestMessage message = new(method, path);
+        if (session.ClientKind == CloudClientKind.Android)
+        {
+            // 安卓主业务 API 实测只带 x-token + x-b3-traceid（OkHttp UA），无 Kr-Ver/Referer/Origin/x-os/Cookie
+            message.Headers.UserAgent.ParseAdd(AndroidCloudGameMethod.UserAgent);
+            message.Headers.TryAddWithoutValidation(
+                "x-token",
+                session.OrginData.AndroidToken!
+            );
+            message.Headers.TryAddWithoutValidation("x-b3-traceid", session.TraceId);
+            return message;
+        }
         message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/plain"));
         message.Headers.AcceptLanguage.ParseAdd("zh-CN,zh;q=0.9");
@@ -354,7 +365,6 @@ public sealed partial class WavesCloudGameService : IWavesCloudGameService
         message.Headers.TryAddWithoutValidation("Cookie", BuildCookieHeader(session));
         message.Headers.TryAddWithoutValidation("x-os", "web");
         message.Headers.TryAddWithoutValidation("x-token", session.EndLoginData.Token);
-        message.Headers.TryAddWithoutValidation("x-os", "web");
         message.Headers.TryAddWithoutValidation("x-b3-traceid", session.TraceId);
         return message;
     }

@@ -199,6 +199,10 @@ public sealed class DialogManager : IDialogManager
     public async Task ShowCloudUserManagerDialogAsync() =>
         await ShowDialogAsync<WavesCloudUserDialog>();
 
+    public async Task ShowCloudAndroidCredentialDialogAsync(
+        Waves.Api.Models.CloudGame.CloudGameLoginData user
+    ) => await ShowDialogAsync<CloudAndroidCredentialDialog>(user);
+
     public async Task ShowGameLauncherChacheDialogAsync(GameLauncherCacheArgs args) =>
         await ShowDialogAsync<GameLauncherCacheManager>(args);
 

@@ -70,4 +70,29 @@ public sealed partial class WavesCloudUserViewModel : DialogViewModelBase
         }
         await this.CloseAsync();
     }
+
+    /// <summary>
+    /// 打开所选账号的安卓凭据导入对话框；凭据变更后刷新账号列表与云游戏页。
+    /// </summary>
+    [RelayCommand]
+    public async Task ShowAndroidCredential()
+    {
+        var selectUser = this.CloudUsers?.FirstOrDefault(x => x.IsSelect);
+        if (selectUser == null)
+        {
+            SystemEventMessager.Publish(
+                new() { Message = LanguageService.GetStringByText("请先选择一个账号") }
+            );
+            return;
+        }
+        var user = await WavesCloudGameService.ConfigManager.GetUserAsync(selectUser.Id);
+        if (user == null)
+        {
+            return;
+        }
+        await this.AppContext.WindowManager.Shell.DialogManager.ShowCloudAndroidCredentialDialogAsync(user);
+        await Loaded();
+        // 凭据变更可能影响当前会话的客户端形态，通知云游戏页刷新会话
+        WeakReferenceMessenger.Default.Send(new RefreshGamePageMessager(true));
+    }
 }

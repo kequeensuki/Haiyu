@@ -60,9 +60,23 @@ partial class CloudGameingViewModel
             Timeout = Timeout.InfiniteTimeSpan,
         };
         client.DefaultRequestHeaders.TryAddWithoutValidation("x-token", Option.CloudApiToken);
-        client.DefaultRequestHeaders.TryAddWithoutValidation("x-os", "web");
-        client.DefaultRequestHeaders.TryAddWithoutValidation("Kr-Ver", "1.9.0");
-        client.DefaultRequestHeaders.Referrer = new Uri("https://mc.kurogames.com/cloud/index.html");
+        if (Option.ClientPlatform == "Android")
+        {
+            // 安卓主业务 API 实测只带 x-token（OkHttp UA），无 x-os / Kr-Ver / Referer
+            client.DefaultRequestHeaders.TryAddWithoutValidation(
+                "User-Agent",
+                Waves.Core.Services.CloudGameServices.AndroidCloudGameMethod.UserAgent
+            );
+        }
+        else
+        {
+            client.DefaultRequestHeaders.TryAddWithoutValidation("x-os", "web");
+            client.DefaultRequestHeaders.TryAddWithoutValidation("Kr-Ver", "1.9.0");
+            client.DefaultRequestHeaders.Referrer = new Uri("https://mc.kurogames.com/cloud/index.html");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Code/1.120.0 Chrome/142.0.7444.265 Electron/39.8.8 Safari/537.36"
+            );
+        }
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/plain, */*");
 
         var consecutiveFailures = 0;
