@@ -31,6 +31,7 @@ namespace ABI.Models;
 [JsonSerializable(typeof(GameNormalItem))]
 [JsonSerializable(typeof(GameWeaponItem))]
 [JsonSerializable(typeof(GamePhantomItem))]
+[JsonSerializable(typeof(GamePhantomProp))]
 [JsonSerializable(typeof(GameValidTimeItem))]
 public partial class ABIJsonContext : JsonSerializerContext
 {

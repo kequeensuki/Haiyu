@@ -39,5 +39,16 @@ public static class ABIMemoryPack
         MemoryPackFormatterProvider.Register<ABISystemConfigProgress>();
         MemoryPackFormatterProvider.Register<PipeMessage>();
         MemoryPackFormatterProvider.Register<OpenRequestMessage>();
+
+        // 游戏数据导出（管道传输体，AOT 下必须显式注册全部 MemoryPackable 类型）
+        MemoryPackFormatterProvider.Register<GameDataExportRequest>();
+        MemoryPackFormatterProvider.Register<GameDataExportProgress>();
+        MemoryPackFormatterProvider.Register<GameDataExportResult>();
+        MemoryPackFormatterProvider.Register<GameInventoryData>();
+        MemoryPackFormatterProvider.Register<GameNormalItem>();
+        MemoryPackFormatterProvider.Register<GameWeaponItem>();
+        MemoryPackFormatterProvider.Register<GamePhantomItem>();
+        MemoryPackFormatterProvider.Register<GamePhantomProp>();
+        MemoryPackFormatterProvider.Register<GameValidTimeItem>();
     }
 }
