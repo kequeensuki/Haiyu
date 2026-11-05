@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Runtime.InteropServices;
 
 namespace Haiyu.ABI.Services.GameDataExport.Capture;
@@ -124,10 +125,23 @@ public sealed class NpcapUdpCapture : IUdpCapture
         if (header.Caplen == 0 || header.Caplen > SnapLength)
             return null;
 
-        var buffer = new byte[header.Caplen];
-        Marshal.Copy(dataPtr, buffer, 0, (int)header.Caplen);
+        // ★ 内存纪律（v2 持续监控）：缓冲从 ArrayPool 租借，调用方用完必须归还。
+        //   UdpFrame.RentedBuffer 标记租借来源；上层 PumpAsync 在单个数据报处理完
+        //   （段已拷贝入流或丢弃）后立即归还——租借缓冲绝不跨数据报存活。
+        var length = (int)header.Caplen;
+        var rented = ArrayPool<byte>.Shared.Rent(length);
+        Marshal.Copy(dataPtr, rented, 0, length);
 
-        return EthernetUdpParser.Parse(buffer, LinkType);
+        var frame = EthernetUdpParser.Parse(rented, length, LinkType);
+        if (frame is null)
+        {
+            // 解析失败（非 UDP/截断）：本帧处理到此为止，直接归还
+            ArrayPool<byte>.Shared.Return(rented);
+            return null;
+        }
+
+        // 解析成功：frame.RentedBuffer = rented，所有权移交调用方（PumpAsync 归还）
+        return frame;
     }
 
     public void Stop()

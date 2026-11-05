@@ -16,6 +16,11 @@ using System.Buffers.Binary;
 /// 16    4   una    累计确认号
 /// 20    4   len    本段数据长度
 /// </code>
+///
+/// ★ 内存纪律（v2 持续监控）：<see cref="Payload"/> 是解析输入缓冲的切片
+/// （<see cref="ReadOnlyMemory{T}"/>，零拷贝）——<b>不拥有内存</b>。
+/// 调用方（<see cref="KcpStreamRebuilder.Add"/>）若要长存一个段，
+/// 必须先拷贝出独立缓冲；解析输入缓冲（ArrayPool 租借）在数据报处理完即归还。
 /// </summary>
 public readonly record struct KcpSegment(
     uint Conv,
@@ -26,7 +31,7 @@ public readonly record struct KcpSegment(
     uint Sn,
     uint Una,
     uint Len,
-    byte[] Payload
+    ReadOnlyMemory<byte> Payload
 )
 {
     public const int HeaderLength = 24;
@@ -71,12 +76,13 @@ public readonly record struct KcpSegment(
     /// 这里返回<b>已成功解析的段</b>，调用方不会因末尾坏段丢掉整个数据报。
     /// </para>
     /// </summary>
-    /// <param name="datagram">完整 UDP 数据报（CRC 开启时含尾 4 字节）</param>
+    /// <param name="datagram">完整 UDP 数据报（CRC 开启时含尾 4 字节）。内容在本调用返回后不再被引用（段内是切片）。</param>
     /// <param name="crcEnabled">握手响应下发的 crcCheck 开关</param>
-    /// <param name="segments">解析出的段（可能为空）</param>
+    /// <param name="segments">解析出的段（可能为空）。Payload 为 <paramref name="datagram"/> 的切片。</param>
     /// <returns>是否至少解析出一个段。</returns>
     public static bool TryParseMany(
         ReadOnlySpan<byte> datagram,
+        ReadOnlyMemory<byte> datagramMemory,
         bool crcEnabled,
         out List<KcpSegment> segments
     )
@@ -113,11 +119,11 @@ public readonly record struct KcpSegment(
             if (len > available)
                 return segments.Count > 0;
 
-            var body = new byte[len];
-            if (len > 0)
-                datagram
-                    .Slice(offset + HeaderLength, (int)len)
-                    .CopyTo(body);
+            // ★ 零拷贝：Payload 切片指向 datagramMemory（租借缓冲），
+            //   KcpStreamRebuilder.Add 对长存的 PUSH 段负责拷贝
+            var body = len > 0
+                ? datagramMemory.Slice(offset + HeaderLength, (int)len)
+                : ReadOnlyMemory<byte>.Empty;
 
             segments.Add(
                 new KcpSegment(

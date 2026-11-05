@@ -110,6 +110,9 @@ public sealed class GameDataExportService
             foreach (var raw in rawMessages)
                 TryResolveFromFrameBytes(raw, _keyLoader);
 
+            // ★ 裸帧已消费，清空（0xEC 实测极少出现，但持续监控下同样不能无界增长）
+            rawMessages.Clear();
+
             ResolveSessionKey(incomingStream, _keyLoader);
 
             if (_keyLoader.SessionKey is null)
@@ -263,12 +266,12 @@ public sealed class GameDataExportService
     )
     {
         var expected = MsgIdFilter.GetTargetMsgIds(scope);
-        var lastReport = Environment.TickCount64;
 
-        // 诊断计数
-        var totalFrames = 0;
-        var handshakeSeen = 0;
-        var matchedSegments = 0;
+        // 诊断计数与节流状态（ProcessFrameAsync 与主循环共享的可变状态）
+        var pumpState = new PumpState
+        {
+            LastReportTick = Environment.TickCount64,
+        };
 
         // ── 多连接追踪 ──
         //   ★ 不锁定「第一个握手」：游戏会并发建立多条 KCP 连接
@@ -286,7 +289,9 @@ public sealed class GameDataExportService
             if (cancellationToken.IsCancellationRequested)
             {
                 Report(progress, GameDataExportStage.Capturing, 50, "收到停止信号，开始解析已捕获数据");
-                return SelectBestStream(streams, receivedByConnection, expected);
+                var canceledStream = SelectBestStream(streams, receivedByConnection, expected);
+                ReleaseCaptureState(streams, receivedByConnection);
+                return canceledStream;
             }
 
             var frame = capture.TryRead();
@@ -297,157 +302,229 @@ public sealed class GameDataExportService
                 continue;
             }
 
-            totalFrames++;
-            onFrame();
-
-            // ① 登记所有握手响应（0xEE 自带 conv/mtu/crc，无需配对 0xED）
-            if (
-                frame.Payload.Length >= 13
-                && frame.Payload[0] == 0xEE
-                && HandshakeScanner.TryParseHandshakeResponse(
-                    frame.Payload,
-                    frame.SrcPort,
-                    frame.DstPort,
-                    out var conn
-                )
-                && conn is not null
-                && !connections.ContainsKey(conn.Conv)
-            )
+            // ★ 租借缓冲纪律：本数据报的全部处理（切段/入流拷贝/裸帧拷贝）都在
+            //   try 内完成，finally 统一归还——租借缓冲绝不跨数据报存活。
+            try
             {
-                connections[conn.Conv] = conn;
-                streams[conn.Conv] = new KcpStreamRebuilder();
-                receivedByConnection[conn.Conv] = [];
-                handshakeSeen++;
-
-                Report(
-                    progress,
-                    GameDataExportStage.Capturing,
-                    15,
-                    $"识别到连接 #{handshakeSeen}：conv=0x{conn.Conv:X8} "
-                        + $"{conn.ClientPort}↔{conn.ServerPort} mtu={conn.Mtu}"
+                await ProcessFrameAsync(
+                    frame, capture, connections, streams, receivedByConnection,
+                    rawMessages, scope, expected,
+                    pumpState, progress, onFrame, cancellationToken
                 );
 
-                continue;
-            }
-
-            if (connections.Count == 0)
-            {
-                // 尚未识别到任何连接，只报进度
-                var nowWait = Environment.TickCount64;
-                if (nowWait - lastReport >= 2000)
-                {
-                    lastReport = nowWait;
-                    Report(
-                        progress,
-                        GameDataExportStage.Capturing,
-                        10,
-                        $"等待握手中（UDP {totalFrames} 帧）"
-                    );
-                }
-
-                continue;
-            }
-
-            // ② 0xEC 裸消息帧：剥 5 字节头后作为独立帧收集
-            if (frame.Payload.Length >= 5 && frame.Payload[0] == 0xEC)
-            {
-                var rawConv = BitConverter.ToUInt32(frame.Payload, 1);
-                if (connections.ContainsKey(rawConv))
-                    rawMessages.Add(frame.Payload.AsSpan(5).ToArray());
-
-                continue;
-            }
-
-            // ③ KCP 段：按端口对找到所属连接
-            //   首字节 0xEC/0xED/0xEE 的包是握手/裸帧，不是段（且可能短于 24B）
-            if (frame.Payload.Length < 24 || frame.Payload[0] is 0xED or 0xEE or 0xEC)
-                continue;
-
-            KcpConnection? owner = null;
-            foreach (var c in connections.Values)
-            {
-                var isOut = frame.SrcPort == c.ClientPort && frame.DstPort == c.ServerPort;
-                var isIn = frame.SrcPort == c.ServerPort && frame.DstPort == c.ClientPort;
-                if (isOut || isIn)
-                {
-                    owner = c;
-                    break;
-                }
-            }
-
-            if (owner is null)
-                continue;
-
-            // ★ 一个 UDP 数据报可能承载多个 KCP 段（ACK+PUSH 拼包，实测帧 83：
-            //   ACK(sn=0) + PUSH(sn=0, 112 ProtoKeyResponse)）。必须解析全部段，
-            //   否则 112 会被静默丢弃（见 KcpSegment.TryParseMany 的说明）。
-            if (!KcpSegment.TryParseMany(frame.Payload, owner.CrcEnabled, out var segments))
-                continue;
-
-            // 每个数据报只做一次进度相关的流重扫（TryAdvance 内部会扫整条流）
-            var stream = streams[owner.Conv];
-            var received = receivedByConnection[owner.Conv];
-            var advanced = false;
-
-            foreach (var segment in segments)
-            {
-                if (segment.Conv != owner.Conv)
-                    continue;
-
-                matchedSegments++;
-
-                // 只关心入站方向（服务器→客户端）：112 与背包数据都在这里
-                if (frame.DstPort != owner.ClientPort)
-                    continue;
-
-                stream.Add(segment);
-
-                if (segment.Cmd == KcpSegment.CmdPush)
-                    advanced = true;
-            }
-
-            if (!advanced)
-                continue;
-
-            // ④ 增量检查（按连接）：解密钥 + 记录该连接收到的目标 msgId。
-            //   keyResolved 不再跨连接共享：哪条流出现 112 就在哪条流上继续。
-            var keyResolved = _keyLoader.SessionKey is not null;
-            TryAdvance(stream, scope, received, ref keyResolved);
-
-            var now = Environment.TickCount64;
-            if (now - lastReport >= 2000)
-            {
-                lastReport = now;
-                var best = received.Count;
-                var percent = 5 + Math.Min(45, best * 45 / Math.Max(expected.Length, 1));
-                Report(
-                    progress,
-                    GameDataExportStage.Capturing,
-                    percent,
+                // ⑤ 完成条件（按连接）：该连接密钥已解 + 收齐全部目标 msgId
+                if (
                     _keyLoader.SessionKey is not null
-                        ? $"已取得会话密钥，收集背包数据（{best}/{expected.Length}）"
-                        : $"连接 {connections.Count} 条，等待会话密钥"
-                        + $"（匹配 {matchedSegments} 段）"
-                );
+                    && pumpState.LastCompletedConnection is { } completedConv
+                    && receivedByConnection[completedConv].Count >= expected.Length
+                )
+                {
+                    Report(progress, GameDataExportStage.Capturing, 55, "数据收集完成，停止抓包");
+                    var completedStream = streams[completedConv];
+                    ReleaseCaptureState(streams, receivedByConnection);
+                    return completedStream;
+                }
             }
-
-            // ⑤ 完成条件（按连接）：该连接密钥已解 + 收齐全部目标 msgId
-            if (
-                _keyLoader.SessionKey is not null
-                && received.Count >= expected.Length
-            )
+            finally
             {
-                Report(progress, GameDataExportStage.Capturing, 55, "数据收集完成，停止抓包");
-                return streams[owner.Conv];
+                frame.ReturnBuffer();
             }
         }
     }
+
+    /// <summary>抓包循环的共享可变状态（避免 async 方法使用 ref 参数）。</summary>
+    private sealed class PumpState
+    {
+        public int TotalFrames;
+        public int HandshakeSeen;
+        public int MatchedSegments;
+        public long LastReportTick;
+        public uint? LastCompletedConnection;
+    }
+
     /// <summary>
-    /// 在不消耗抓包循环的前提下，增量检查入站流：
-    /// 解出会话密钥、记录已收到的目标 msgId。
+    /// 处理单个 UDP 数据报（握手登记 / 0xEC 裸帧 / KCP 段入流 + 增量检查）。
+    /// 拆出方法以便 try/finally 精确包裹租借缓冲的生存期。
+    /// </summary>
+    private async Task ProcessFrameAsync(
+        UdpFrame frame,
+        IUdpCapture capture,
+        Dictionary<uint, KcpConnection> connections,
+        Dictionary<uint, KcpStreamRebuilder> streams,
+        Dictionary<uint, HashSet<ushort>> receivedByConnection,
+        List<byte[]> rawMessages,
+        GameDataExportScope scope,
+        ushort[] expected,
+        PumpState state,
+        IProgress<GameDataExportProgress> progress,
+        Action onFrame,
+        CancellationToken cancellationToken
+    )
+    {
+        state.TotalFrames++;
+        onFrame();
+
+        // ① 登记所有握手响应（0xEE 自带 conv/mtu/crc，无需配对 0xED）
+        if (
+            frame.Payload.Length >= 13
+            && frame.Payload.Span[0] == 0xEE
+            && HandshakeScanner.TryParseHandshakeResponse(
+                frame.Payload.Span,
+                frame.SrcPort,
+                frame.DstPort,
+                out var conn
+            )
+            && conn is not null
+            && !connections.ContainsKey(conn.Conv)
+        )
+        {
+            connections[conn.Conv] = conn;
+            streams[conn.Conv] = new KcpStreamRebuilder();
+            receivedByConnection[conn.Conv] = [];
+            state.HandshakeSeen++;
+
+            Report(
+                progress,
+                GameDataExportStage.Capturing,
+                15,
+                $"识别到连接 #{state.HandshakeSeen}：conv=0x{conn.Conv:X8} "
+                    + $"{conn.ClientPort}↔{conn.ServerPort} mtu={conn.Mtu}"
+            );
+
+            return;
+        }
+
+        if (connections.Count == 0)
+        {
+            // 尚未识别到任何连接，只报进度
+            var nowWait = Environment.TickCount64;
+            if (nowWait - state.LastReportTick >= 2000)
+            {
+                state.LastReportTick = nowWait;
+                Report(
+                    progress,
+                    GameDataExportStage.Capturing,
+                    10,
+                    $"等待握手中（UDP {state.TotalFrames} 帧）"
+                );
+            }
+
+            return;
+        }
+
+        // ② 0xEC 裸消息帧：剥 5 字节头后作为独立帧收集
+        //    ★ 长存拷贝：rawMessages 拥有独立缓冲（租借缓冲由调用方 finally 归还）
+        if (frame.Payload.Length >= 5 && frame.Payload.Span[0] == 0xEC)
+        {
+            var rawConv = BitConverter.ToUInt32(frame.Payload.Span[1..]);
+            if (connections.ContainsKey(rawConv))
+                rawMessages.Add(frame.Payload.Span[5..].ToArray());
+
+            return;
+        }
+
+        // ③ KCP 段：按端口对找到所属连接
+        //   首字节 0xEC/0xED/0xEE 的包是握手/裸帧，不是段（且可能短于 24B）
+        if (frame.Payload.Length < 24 || frame.Payload.Span[0] is 0xED or 0xEE or 0xEC)
+            return;
+
+        KcpConnection? owner = null;
+        foreach (var c in connections.Values)
+        {
+            var isOut = frame.SrcPort == c.ClientPort && frame.DstPort == c.ServerPort;
+            var isIn = frame.SrcPort == c.ServerPort && frame.DstPort == c.ClientPort;
+            if (isOut || isIn)
+            {
+                owner = c;
+                break;
+            }
+        }
+
+        if (owner is null)
+            return;
+
+        // ★ 一个 UDP 数据报可能承载多个 KCP 段（ACK+PUSH 拼包，实测帧 83：
+        //   ACK(sn=0) + PUSH(sn=0, 112 ProtoKeyResponse)）。必须解析全部段，
+        //   否则 112 会被静默丢弃（见 KcpSegment.TryParseMany 的说明）。
+        //   段的 Payload 是租借缓冲的切片——入流的段由 KcpStreamRebuilder.Add 拷贝，
+        //   未入流的段在本数据报处理完即失效（租借缓冲由调用方归还）。
+        if (!KcpSegment.TryParseMany(frame.Payload.Span, frame.Payload, owner.CrcEnabled, out var segments))
+            return;
+
+        var stream = streams[owner.Conv];
+        var received = receivedByConnection[owner.Conv];
+        var advanced = false;
+
+        foreach (var segment in segments)
+        {
+            if (segment.Conv != owner.Conv)
+                continue;
+
+            state.MatchedSegments++;
+
+            // 只关心入站方向（服务器→客户端）：112 与背包数据都在这里
+            if (frame.DstPort != owner.ClientPort)
+                continue;
+
+            stream.Add(segment);
+
+            if (segment.Cmd == KcpSegment.CmdPush)
+                advanced = true;
+        }
+
+        if (!advanced)
+            return;
+
+        // ④ 增量检查（按连接）：解密钥 + 记录该连接收到的目标 msgId。
+        //   keyResolved 不再跨连接共享：哪条流出现 112 就在哪条流上继续。
+        var keyResolved = _keyLoader.SessionKey is not null;
+        TryAdvance(stream, scope, received, ref keyResolved);
+
+        var now = Environment.TickCount64;
+        if (now - state.LastReportTick >= 2000)
+        {
+            state.LastReportTick = now;
+            var best = received.Count;
+            var percent = 5 + Math.Min(45, best * 45 / Math.Max(expected.Length, 1));
+            Report(
+                progress,
+                GameDataExportStage.Capturing,
+                percent,
+                _keyLoader.SessionKey is not null
+                    ? $"已取得会话密钥，收集背包数据（{best}/{expected.Length}）"
+                    : $"连接 {connections.Count} 条，等待会话密钥"
+                    + $"（匹配 {state.MatchedSegments} 段）"
+            );
+        }
+
+        // ⑤ 完成判定（v1 语义）：记录收齐的连接，由调用方读取并退出循环
+        if (_keyLoader.SessionKey is not null && received.Count >= expected.Length)
+        {
+            state.LastCompletedConnection = owner.Conv;
+        }
+    }
+
+    /// <summary>
+    /// 释放抓包状态（流 / 连接表 / 每连接 msgId 集合）。
+    /// ★ 宿主是常驻进程：会话结束必须清干净，防残留引用拖内存。
+    /// 返回的流已不受本字典持有（字典本身被清空）。
+    /// </summary>
+    private static void ReleaseCaptureState(
+        Dictionary<uint, KcpStreamRebuilder> streams,
+        Dictionary<uint, HashSet<ushort>> receivedByConnection
+    )
+    {
+        foreach (var stream in streams.Values)
+            stream.Clear();
+        streams.Clear();
+        receivedByConnection.Clear();
+    }    /// <summary>
+    /// 增量检查入站流：解出会话密钥、记录已收到的目标 msgId。
     ///
-    /// 每次都从头重扫完整流——数据量小（一次会话几百 KB），
-    /// 比维护增量解析状态可靠得多。
+    /// ★ v2 增量化（P0-A4）：只解析水位之后的新字节（<see cref="KcpStreamRebuilder.BuildIncremental"/>），
+    ///   解析完推进水位并 <see cref="KcpStreamRebuilder.Compact"/> 收缩存储——
+    ///   v1 每次全量重拼整条流是 O(N²)，持续监控下不可运行。
+    ///   尾部半帧（数据不足）不推进水位，等后续段到齐再解析。
     /// </summary>
     private void TryAdvance(
         KcpStreamRebuilder incoming,
@@ -456,29 +533,58 @@ public sealed class GameDataExportService
         ref bool keyResolved
     )
     {
-        // 还没恢复私钥就没法解密钥，直接跳过
+        // 还没恢复私钥就没法解密钥，直接跳过（新字节留在流里，密钥到位后再解析）
         if (!_keyLoader.HasPrivateKey)
             return;
 
-        var stream = incoming.Build();
-        if (stream.Length == 0)
+        var incremental = incoming.BuildIncremental();
+        if (incremental.Length == 0)
             return;
 
         var expected = MsgIdFilter.GetTargetMsgIds(scope);
+        var offset = 0;
+        var parsedBytes = 0;
+        var complete = true;
 
-        foreach (var frame in EnumerateFrames(stream))
+        while (offset < incremental.Length)
         {
-            // 尝试解会话密钥（只成功一次）
-            if (!keyResolved && frame.MsgId == MsgIdFilter.ProtoKeyResponse)
-            {
-                if (_keyLoader.TryResolve(frame))
-                    keyResolved = true;
+            var before = offset;
 
+            if (FrameSplitter.TryTake(incremental, ref offset, out var frame))
+            {
+                if (frame is not null)
+                {
+                    // 尝试解会话密钥（只成功一次）
+                    if (!keyResolved && frame.MsgId == MsgIdFilter.ProtoKeyResponse)
+                    {
+                        if (_keyLoader.TryResolve(frame))
+                            keyResolved = true;
+                    }
+                    else if (expected.Contains(frame.MsgId))
+                    {
+                        received.Add(frame.MsgId);
+                    }
+                }
+
+                parsedBytes = offset;
                 continue;
             }
 
-            if (expected.Contains(frame.MsgId))
-                received.Add(frame.MsgId);
+            // 未切出帧：
+            //   offset 前进 → 坏帧已跳过（可计入已解析）
+            //   offset 未变 → 数据不足（半帧），从当前位置起留给下一轮
+            if (offset == before)
+            {
+                complete = false;
+                break;
+            }
+        }
+
+        incoming.AdvanceConsumed(parsedBytes);
+        if (complete && parsedBytes > 0)
+        {
+            // 全部解析完（无半帧悬挂）才收缩；有半帧时保留尾部段等待拼接
+            incoming.Compact();
         }
     }
 

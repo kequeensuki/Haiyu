@@ -29,6 +29,7 @@ internal static class Program
             ("64 MiB 分帧与双向完整性", TestLargeMessagesAsync),
             ("并发独立请求管道", TestConcurrentPipesAsync),
             ("请求 ID 关联取消", TestCancellationMessageAsync),
+            ("KCP 流水位/增量/Compact 语义", TestKcpStreamWatermarkAsync),
             ("ComputerMonitorService 实际采样", TestDirectMonitorAsync),
             ("ComputerMonitorService 管道进度链", TestMonitorServicePipeAsync),
             ("控制管道与独立请求管道完整调用", TestElevatedHostRoutingAsync),
@@ -77,8 +78,75 @@ internal static class Program
         return failures == 0 ? 0 : 1;
     }
 
-    private static async Task TestXboxSessionsAsync()
+    /// <summary>
+    /// KCP 流水位语义（v2 阶段 1 核心）：Add 长存拷贝、增量视图只含新字节、
+    /// AdvanceConsumed/Compact 收缩、半帧保留、重复 sn 去重。
+    /// </summary>
+    private static async Task TestKcpStreamWatermarkAsync()
     {
+        var stream = new Haiyu.ABI.Services.GameDataExport.Rebuild.KcpStreamRebuilder();
+
+        Haiyu.ABI.Services.GameDataExport.Rebuild.KcpSegment MakeSegment(uint sn, byte fill, int length) =>
+            new(0x1234, Haiyu.ABI.Services.GameDataExport.Rebuild.KcpSegment.CmdPush, 0, 0, 0, sn, 0, (uint)length,
+                Enumerable.Repeat(fill, length).ToArray());
+
+        // 3 段入流（sn=0,1,2 各 10 字节）
+        stream.Add(MakeSegment(0, 0xAA, 10));
+        stream.Add(MakeSegment(1, 0xBB, 10));
+        stream.Add(MakeSegment(2, 0xCC, 10));
+        Equal(3, stream.SegmentCount);
+        Equal(0L, stream.ConsumedBytes);
+
+        // 全量视图 = 30 字节
+        var full = stream.Build();
+        Equal(30, full.Length);
+        Equal(0xAA, full[0]);
+        Equal(0xBB, full[10]);
+
+        // 增量视图 1：水位 0 → 全部 30 字节
+        var inc1 = stream.BuildIncremental();
+        Equal(30, inc1.Length);
+
+        // 消费 25 字节（第 3 段还剩 5 字节未消费 = 半帧悬挂）
+        stream.AdvanceConsumed(25);
+        stream.Compact();
+        // ★ Compact 平移坐标系：丢弃 20 字节前缀后，水位在幸存数据中为 5（本地坐标）
+        Equal(5L, stream.ConsumedBytes);
+
+        // 前两段（整体位于水位前）应被 Compact 丢弃；第三段跨界保留
+        Equal(1, stream.SegmentCount);
+
+        // 增量视图 2：只剩未消费的 5 字节
+        var inc2 = stream.BuildIncremental();
+        Equal(5, inc2.Length);
+        Equal(0xCC, inc2[0]);
+
+        // 重复 sn（重传）被去重：sn=2 重发不改变视图
+        stream.Add(MakeSegment(2, 0xDD, 10));
+        var inc3 = stream.BuildIncremental();
+        Equal(5, inc3.Length);
+        Equal(0xCC, inc3[0]); // 保留首份数据
+
+        // 新段到达，水位推进到底后 Compact 全清
+        stream.Add(MakeSegment(3, 0xEE, 8));
+        stream.AdvanceConsumed(13); // 5 + 8
+        stream.Compact();
+        Equal(0, stream.SegmentCount);
+
+        // 全消费后增量视图为空
+        var inc4 = stream.BuildIncremental();
+        Equal(0, inc4.Length);
+
+        // Clear 复位
+        stream.Add(MakeSegment(9, 0xFF, 6));
+        stream.Clear();
+        Equal(0, stream.SegmentCount);
+        Equal(0L, stream.ConsumedBytes);
+
+        await Task.CompletedTask;
+    }
+
+    private static async Task TestXboxSessionsAsync()    {
         static void Check(bool condition, string message)
         {
             if (!condition) throw new InvalidDataException(message);

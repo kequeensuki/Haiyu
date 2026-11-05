@@ -36,8 +36,50 @@ public static class FrameCipher
     private const int SessionKeyLength = 32;
     private const int MaxPadding = 16;
 
+    // ★ AES transform 复用（v2 持续监控，P1-A6）：会话密钥不变期间复用同一
+    //   ICryptoTransform（ECB 无 IV、PaddingMode.None，transform 本身无请求间状态，
+    //   每次 TransformFinalBlock 独立）。密钥更换（重登）时由 CacheKey 变化触发重建。
+    private static readonly object TransformGate = new();
+    private static ICryptoTransform? _cachedTransform;
+    private static byte[]? _cachedKey;
+
     /// <summary>校验会话密钥长度（游戏侧 SetK 只接受恰好 32 字节）。</summary>
     public static bool IsValidSessionKey(byte[]? key) => key is { Length: SessionKeyLength };
+
+    /// <summary>获取（或创建）密钥对应的解密 transform；异常时强制重建。</summary>
+    private static ICryptoTransform GetDecryptor(byte[] sessionKey)
+    {
+        lock (TransformGate)
+        {
+            if (_cachedTransform is { } cached
+                && _cachedKey is not null
+                && cached.CanReuseTransform
+                && _cachedKey.AsSpan().SequenceEqual(sessionKey))
+            {
+                return cached;
+            }
+
+            _cachedTransform?.Dispose();
+            using var aes = Aes.Create();
+            aes.Key = sessionKey;
+            aes.Mode = CipherMode.ECB;
+            aes.Padding = PaddingMode.None;
+            _cachedTransform = aes.CreateDecryptor();
+            _cachedKey = (byte[])sessionKey.Clone();
+            return _cachedTransform;
+        }
+    }
+
+    /// <summary>会话密钥更换时调用（重登衔接），下一帧起重建 transform。</summary>
+    public static void InvalidateCachedTransform()
+    {
+        lock (TransformGate)
+        {
+            _cachedTransform?.Dispose();
+            _cachedTransform = null;
+            _cachedKey = null;
+        }
+    }
 
     /// <summary>
     /// 解密并解压一帧的载荷，产出可直接交给 protobuf 的明文。
@@ -77,12 +119,17 @@ public static class FrameCipher
         byte[] plain;
         try
         {
-            using var aes = Aes.Create();
-            aes.Key = sessionKey!;
-            aes.Mode = CipherMode.ECB;
-            aes.Padding = PaddingMode.None;
-            using var decryptor = aes.CreateDecryptor();
-            plain = decryptor.TransformFinalBlock(payload, 0, payload.Length);
+            // ★ 复用缓存的 decryptor（密钥不变期间零分配）；异常时重建一次再试
+            var decryptor = GetDecryptor(sessionKey!);
+            try
+            {
+                plain = decryptor.TransformFinalBlock(payload, 0, payload.Length);
+            }
+            catch (CryptographicException)
+            {
+                InvalidateCachedTransform();
+                plain = GetDecryptor(sessionKey!).TransformFinalBlock(payload, 0, payload.Length);
+            }
         }
         catch (CryptographicException)
         {

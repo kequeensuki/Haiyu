@@ -61,12 +61,12 @@ public sealed class HandshakeScanner
         if (payload.Length < MinResponseLength || payload[0] != HandshakeResponseTag)
             return false;
 
-        var conv = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(1));
+        var conv = BinaryPrimitives.ReadUInt32LittleEndian(payload[1..]);
         if (conv == 0)
             return false;
 
-        var crcCheck = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(5));
-        var mtu = (int)BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(9));
+        var crcCheck = BinaryPrimitives.ReadUInt32LittleEndian(payload[5..]);
+        var mtu = (int)BinaryPrimitives.ReadUInt32LittleEndian(payload[9..]);
 
         Connection = new KcpConnection(
             conv,
@@ -94,7 +94,7 @@ public sealed class HandshakeScanner
     /// </para>
     /// </summary>
     public static bool TryParseHandshakeResponse(
-        byte[] payload,
+        ReadOnlySpan<byte> payload,
         int srcPort,
         int dstPort,
         out KcpConnection? connection
@@ -105,12 +105,12 @@ public sealed class HandshakeScanner
         if (payload.Length < MinResponseLength || payload[0] != HandshakeResponseTag)
             return false;
 
-        var conv = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(1));
+        var conv = BinaryPrimitives.ReadUInt32LittleEndian(payload[1..]);
         if (conv == 0)
             return false;
 
-        var crcCheck = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(5));
-        var mtu = (int)BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(9));
+        var crcCheck = BinaryPrimitives.ReadUInt32LittleEndian(payload[5..]);
+        var mtu = (int)BinaryPrimitives.ReadUInt32LittleEndian(payload[9..]);
 
         // mtu 必须合理，否则大概率不是握手帧
         if (mtu is < 500 or > 9000)

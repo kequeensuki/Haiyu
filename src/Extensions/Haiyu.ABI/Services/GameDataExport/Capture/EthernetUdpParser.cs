@@ -20,17 +20,22 @@ internal static class EthernetUdpParser
     private const byte ProtocolUdp = 17;
 
     /// <summary>解析失败（非 IPv4/UDP、或帧被截断）返回 <c>null</c>。</summary>
-    public static UdpFrame? Parse(byte[] frame, int linkType)
+    /// <remarks>
+    /// ★ 零拷贝（v2 持续监控）：返回的 <see cref="UdpFrame"/> 其 Payload 是
+    /// <paramref name="frameBuffer"/> 的切片，不分配新内存；缓冲所有权随帧移交。
+    /// </remarks>
+    public static UdpFrame? Parse(byte[] frameBuffer, int frameLength, int linkType)
     {
         // 1 == DLT_EN10MB。其他链路层（如 Loopback）首部不同，首版不支持。
         if (linkType != 1)
             return null;
 
-        if (frame.Length < EtherHeaderLength)
+        if (frameLength < EtherHeaderLength)
             return null;
 
+        var frame = frameBuffer.AsSpan(0, frameLength);
         var offset = EtherHeaderLength;
-        var etherType = BinaryPrimitives.ReadUInt16BigEndian(frame.AsSpan(12));
+        var etherType = BinaryPrimitives.ReadUInt16BigEndian(frame[12..]);
 
         // 处理 802.1Q / QinQ 标签
         while (etherType is EtherTypeVlan or EtherTypeQinQ)
@@ -38,17 +43,17 @@ internal static class EthernetUdpParser
             if (frame.Length < offset + VlanTagLength)
                 return null;
 
-            etherType = BinaryPrimitives.ReadUInt16BigEndian(frame.AsSpan(offset + 2));
+            etherType = BinaryPrimitives.ReadUInt16BigEndian(frame[(offset + 2)..]);
             offset += VlanTagLength;
         }
 
         if (etherType != EtherTypeIpv4)
             return null;
 
-        return ParseIpv4(frame, offset);
+        return ParseIpv4(frameBuffer, frame, offset);
     }
 
-    private static UdpFrame? ParseIpv4(byte[] frame, int ipOffset)
+    private static UdpFrame? ParseIpv4(byte[] frameBuffer, ReadOnlySpan<byte> frame, int ipOffset)
     {
         if (frame.Length < ipOffset + Ipv4HeaderMinLength)
             return null;
@@ -68,24 +73,25 @@ internal static class EthernetUdpParser
         if (frame.Length < udpOffset + UdpHeaderLength)
             return null;
 
-        var udpLength = BinaryPrimitives.ReadUInt16BigEndian(frame.AsSpan(udpOffset + 4));
+        var udpLength = BinaryPrimitives.ReadUInt16BigEndian(frame[(udpOffset + 4)..]);
         var payloadLength = udpLength - UdpHeaderLength;
 
         if (payloadLength < 0 || udpOffset + UdpHeaderLength + payloadLength > frame.Length)
             return null;
 
-        var payload = new byte[payloadLength];
-        Array.Copy(frame, udpOffset + UdpHeaderLength, payload, 0, payloadLength);
+        // ★ 零拷贝：切片直接指向租借缓冲的 UDP 载荷区（不再 new byte[] 拷贝）
+        var payload = frameBuffer.AsMemory(udpOffset + UdpHeaderLength, payloadLength);
 
         return new UdpFrame(
             FormatIp(frame, ipOffset + 12),
-            BinaryPrimitives.ReadUInt16BigEndian(frame.AsSpan(udpOffset)),
+            BinaryPrimitives.ReadUInt16BigEndian(frame[udpOffset..]),
             FormatIp(frame, ipOffset + 16),
-            BinaryPrimitives.ReadUInt16BigEndian(frame.AsSpan(udpOffset + 2)),
-            payload
+            BinaryPrimitives.ReadUInt16BigEndian(frame[(udpOffset + 2)..]),
+            payload,
+            frameBuffer
         );
     }
 
-    private static string FormatIp(byte[] frame, int offset) =>
+    private static string FormatIp(ReadOnlySpan<byte> frame, int offset) =>
         $"{frame[offset]}.{frame[offset + 1]}.{frame[offset + 2]}.{frame[offset + 3]}";
 }
