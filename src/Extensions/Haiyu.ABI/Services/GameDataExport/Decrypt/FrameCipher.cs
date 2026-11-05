@@ -36,6 +36,9 @@ public static class FrameCipher
     private const int SessionKeyLength = 32;
     private const int MaxPadding = 16;
 
+    /// <summary>解压后大小的合理上限（与 FrameSplitter 的帧头校验一致：64 MB）。</summary>
+    private const uint MaxOrigSize = 64 * 1024 * 1024;
+
     // ★ AES transform 复用（v2 持续监控，P1-A6）：会话密钥不变期间复用同一
     //   ICryptoTransform（ECB 无 IV、PaddingMode.None，transform 本身无请求间状态，
     //   每次 TransformFinalBlock 独立）。密钥更换（重登）时由 CacheKey 变化触发重建。
@@ -145,6 +148,11 @@ public static class FrameCipher
     ///
     /// ★ 对应 native <c>sub_142E8EA10</c>：<c>inflateInit_("1.2.5", 88)</c>
     ///   → <c>inflate(stream, Z_FINISH)</c> → 长度比对，不符即失败。
+    ///
+    /// ★ 内存（v2 P2-A7，消除双拷贝）：origSize 已知时直接按其分配输出缓冲、
+    ///   <see cref="ZLibStream.Read"/> 直填——旧实现经 MemoryStream 中转再
+    ///   <c>ToArray()</c> 是两次拷贝；新实现一次分配一次填充，调用方签名不变。
+    ///   无 origSize 时回退旧路径（频率为零：压缩帧必带 origSize）。
     /// </summary>
     public static bool TryInflate(byte[] compressed, uint expectedSize, out byte[] result)
     {
@@ -153,19 +161,48 @@ public static class FrameCipher
         if (compressed.Length == 0)
             return false;
 
+        // 快路径：压缩帧必带合理的 origSize → 精确分配直填
+        if (expectedSize > 0 && expectedSize <= MaxOrigSize)
+        {
+            var output = new byte[expectedSize];
+            try
+            {
+                int written;
+                using (var input = new MemoryStream(compressed))
+                using (var zlib = new ZLibStream(input, CompressionMode.Decompress))
+                {
+                    written = zlib.Read(output, 0, output.Length);
+                }
+
+                // native: `if (a2 != v9) { 日志; result = 0; }` —— 长度严格校验
+                if (written != expectedSize)
+                    return false;
+
+                result = output;
+                return true;
+            }
+            catch (InvalidDataException)
+            {
+                return false;
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+        }
+
+        // 回退路径：无 origSize / 异常尺寸（实际不发生，防御保留）
         try
         {
             using var input = new MemoryStream(compressed);
             using var zlib = new ZLibStream(input, CompressionMode.Decompress);
             using var output = new MemoryStream();
             zlib.CopyTo(output);
-            var data = output.ToArray();
 
-            // native: `if (a2 != v9) { 日志; result = 0; }` —— 长度严格校验
-            if (expectedSize > 0 && data.LongLength != expectedSize)
+            if (output.Length > int.MaxValue || (expectedSize > 0 && output.Length != expectedSize))
                 return false;
 
-            result = data;
+            result = output.ToArray();
             return true;
         }
         catch (InvalidDataException)
