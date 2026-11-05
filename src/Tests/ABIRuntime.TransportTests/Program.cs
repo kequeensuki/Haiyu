@@ -36,6 +36,9 @@ internal static partial class Program
             ("KCP 缺口超时和缓存上限", TestCaptureLimitsAsync),
             ("导出服务写入失败重试及就绪/数据进度", TestExportPersistenceRetryAsync),
             ("服务取消后最终结果仍送达", TestExportStopResultAsync),
+            ("候选接口：状态/IPv4/GUID 匹配", TestNetworkCandidatesAsync),
+            ("多接口捕获：公平轮询/锁定/防抖/错误恢复/释放", TestMultiInterfaceCaptureAsync),
+            ("有线切无线：同连接及新连接保留密钥/玩家/快照", TestNetworkReconnectAsync),
             ("ComputerMonitorService 实际采样", TestDirectMonitorAsync),
             ("ComputerMonitorService 管道进度链", TestMonitorServicePipeAsync),
             ("控制管道与独立请求管道完整调用", TestElevatedHostRoutingAsync),
@@ -45,7 +48,9 @@ internal static partial class Program
             tests = tests.Where(t => t.Run == TestKcpStreamWatermarkAsync
                 || t.Run == TestInventoryCaptureAsync || t.Run == TestPlayerIdResolverAsync
                 || t.Run == TestAtomicWriteAsync || t.Run == TestCaptureLimitsAsync
-                || t.Run == TestExportPersistenceRetryAsync || t.Run == TestExportStopResultAsync).ToArray();
+                || t.Run == TestExportPersistenceRetryAsync || t.Run == TestExportStopResultAsync
+                || t.Run == TestNetworkCandidatesAsync || t.Run == TestMultiInterfaceCaptureAsync
+                || t.Run == TestNetworkReconnectAsync).ToArray();
 
         if (args.Contains("--transport"))
             tests = tests.Where(t => t.Run == TestDependencyInjectionAsync

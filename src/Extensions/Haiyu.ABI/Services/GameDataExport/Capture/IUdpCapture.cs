@@ -16,7 +16,8 @@ public sealed record UdpFrame(
     string DstIp,
     int DstPort,
     Memory<byte> Payload,
-    byte[]? RentedBuffer
+    byte[]? RentedBuffer,
+    string? InterfaceId = null
 )
 {
     /// <summary>归还租借缓冲（非租借构造的帧为空操作）。</summary>
@@ -48,4 +49,12 @@ public interface IUdpCapture : IDisposable
     ///   调用方处理完必须 <see cref="UdpFrame.ReturnBuffer"/>。
     /// </summary>
     UdpFrame? TryRead();
+}
+
+/// <summary>捕获管理只负责接口；协议层确认游戏流量后再锁定接口。</summary>
+internal interface IAdaptiveUdpCapture : IUdpCapture
+{
+    int NetworkGeneration { get; }
+    void ConfirmInterface(UdpFrame frame);
+    string? TakeDiagnostic();
 }

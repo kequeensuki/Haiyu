@@ -9,11 +9,10 @@ namespace Haiyu.ABI.Services.GameDataExport.Capture;
 /// BPF 固定为 <c>udp</c>——不过滤端口，因为游戏的 KCP 端口每次会话都可能不同
 /// （实测见过 13108 / 13111），交给上层按 KCP 结构特征判定。
 ///
-/// ★ 缓冲区调优（关键）：默认 1MB 缓冲在突发时会导致**内核丢包**，
-///   而 KCP 段丢失会直接导致无法拼出完整帧（实测丢过一次 41%，
-///   112 会话密钥帧就在丢失的段里）。这里显式配置大缓冲 + 实时模式。
+/// 每个实例只管理一张网卡，以非阻塞方式供多接口管理器公平轮询。
+/// 捕获缓冲使用 Npcap 默认值，句柄读写与释放由同一捕获线程完成。
 /// </summary>
-public sealed class NpcapUdpCapture : IUdpCapture
+internal sealed class NpcapUdpCapture(CaptureDevice device) : IUdpCapture
 {
     private const string BpfFilter = "udp";
     private const int SnapLength = 65535;
@@ -51,11 +50,23 @@ public sealed class NpcapUdpCapture : IUdpCapture
         // wpcap.dll 安装在 C:\Windows\System32\Npcap，通常不在 PATH 里
         NpcapNative.EnsureSearchPath();
 
-        var device = SelectDevice();
         _handle = OpenDevice(device.Name);
         DeviceDescription = device.Description;
-        LinkType = NpcapNative.pcap_datalink(_handle);
-        ApplyFilter();
+        try
+        {
+            LinkType = NpcapNative.pcap_datalink(_handle);
+            if (LinkType != 1)
+                throw new NotSupportedException($"网卡 {device.Description} 的链路类型 {LinkType} 暂不支持。");
+            ApplyFilter();
+            var error = new byte[512];
+            if (NpcapNative.pcap_setnonblock(_handle, 1, error) != 0)
+                throw new IOException($"设置非阻塞捕获失败：{NpcapNative.DecodeError(error)}");
+        }
+        catch
+        {
+            CloseHandle();
+            throw;
+        }
     }
 
     /// <summary>
@@ -104,7 +115,8 @@ public sealed class NpcapUdpCapture : IUdpCapture
 
         try
         {
-            NpcapNative.pcap_setfilter(_handle, ref program);
+            if (NpcapNative.pcap_setfilter(_handle, ref program) != 0)
+                throw new IOException($"设置 UDP 过滤器失败：{NpcapNative.GetLastError(_handle)}");
         }
         finally
         {
@@ -118,8 +130,10 @@ public sealed class NpcapUdpCapture : IUdpCapture
             return null;
 
         var rc = NpcapNative.pcap_next_ex(_handle, out var headerPtr, out var dataPtr);
-        if (rc <= 0)
+        if (rc == 0)
             return null;
+        if (rc < 0)
+            throw new IOException($"网卡 {device.Description} 捕获失败：{NpcapNative.GetLastError(_handle)}");
 
         var header = Marshal.PtrToStructure<NpcapNative.PcapPkthdr>(headerPtr);
         if (header.Caplen == 0 || header.Caplen > SnapLength)
@@ -130,18 +144,20 @@ public sealed class NpcapUdpCapture : IUdpCapture
         //   （段已拷贝入流或丢弃）后立即归还——租借缓冲绝不跨数据报存活。
         var length = (int)header.Caplen;
         var rented = ArrayPool<byte>.Shared.Rent(length);
-        Marshal.Copy(dataPtr, rented, 0, length);
-
-        var frame = EthernetUdpParser.Parse(rented, length, LinkType);
-        if (frame is null)
+        try
         {
-            // 解析失败（非 UDP/截断）：本帧处理到此为止，直接归还
-            ArrayPool<byte>.Shared.Return(rented);
-            return null;
+            Marshal.Copy(dataPtr, rented, 0, length);
+            var frame = EthernetUdpParser.Parse(rented, length, LinkType);
+            if (frame is not null)
+                return frame with { InterfaceId = device.Id };
         }
-
-        // 解析成功：frame.RentedBuffer = rented，所有权移交调用方（PumpAsync 归还）
-        return frame;
+        catch
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+            throw;
+        }
+        ArrayPool<byte>.Shared.Return(rented);
+        return null;
     }
 
     public void Stop()
@@ -167,55 +183,4 @@ public sealed class NpcapUdpCapture : IUdpCapture
         CloseHandle();
     }
 
-    private static DeviceInfo SelectDevice()
-    {
-        var errbuf = new byte[512];
-        if (NpcapNative.pcap_findalldevs(out var listPtr, errbuf) != 0)
-        {
-            throw new InvalidOperationException(
-                $"枚举网卡失败：{NpcapNative.DecodeError(errbuf)}"
-            );
-        }
-
-        try
-        {
-            var candidates = new List<DeviceInfo>();
-            var current = listPtr;
-
-            while (current != IntPtr.Zero)
-            {
-                var device = Marshal.PtrToStructure<NpcapNative.PcapIf>(current);
-                candidates.Add(
-                    new DeviceInfo(
-                        Marshal.PtrToStringAnsi(device.Name) ?? string.Empty,
-                        Marshal.PtrToStringAnsi(device.Description) ?? string.Empty
-                    )
-                );
-                current = device.Next;
-            }
-
-            // 优先真实网卡：排除 WAN Miniport 与 Loopback
-            var selected =
-                candidates.FirstOrDefault(d =>
-                    d.Description.Contains("Ethernet", StringComparison.OrdinalIgnoreCase)
-                    || d.Description.Contains("以太网", StringComparison.OrdinalIgnoreCase)
-                    || d.Description.Contains("Wi-Fi", StringComparison.OrdinalIgnoreCase)
-                    || d.Description.Contains("WLAN", StringComparison.OrdinalIgnoreCase)
-                )
-                ?? candidates.FirstOrDefault(d =>
-                    !d.Description.Contains("Miniport", StringComparison.OrdinalIgnoreCase)
-                    && !d.Description.Contains("Loopback", StringComparison.OrdinalIgnoreCase)
-                )
-                ?? candidates.FirstOrDefault();
-
-            return selected
-                ?? throw new InvalidOperationException("未找到可用网卡（是否已安装 Npcap？）");
-        }
-        finally
-        {
-            NpcapNative.pcap_freealldevs(listPtr);
-        }
-    }
-
-    private sealed record DeviceInfo(string Name, string Description);
 }

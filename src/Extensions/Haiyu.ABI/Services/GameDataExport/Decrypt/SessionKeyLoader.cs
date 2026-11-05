@@ -53,12 +53,18 @@ public sealed class SessionKeyLoader : IDisposable
     }
 
     /// <summary>共享私钥来源，但每条连接拥有独立的会话密钥和生命周期。</summary>
-    internal SessionKeyLoader CreateSession()
+    internal SessionKeyLoader CreateSession(bool resume = false)
     {
         if (_privateKey is null)
             throw new InvalidOperationException("尚未载入私钥。");
         var session = new SessionKeyLoader();
         session.LoadPrivateKeyPem(_privateKey.ExportPkcs8PrivateKeyPem());
+        if (resume && SessionKey is not null)
+        {
+            session.SessionKey = SessionKey.ToArray();
+            session._lastKeyBlob = _lastKeyBlob?.ToArray();
+            session.Generation = Generation;
+        }
         return session;
     }
 

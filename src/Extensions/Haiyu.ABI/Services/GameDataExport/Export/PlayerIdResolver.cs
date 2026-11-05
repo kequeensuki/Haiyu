@@ -176,6 +176,15 @@ public sealed class PlayerIdResolver
         }
     }
 
+    internal void RestoreFrom(PlayerIdResolver previous)
+    {
+        Current = previous.Current;
+        PlayerId = previous.PlayerId;
+        _keyResolvedTick = previous._keyResolvedTick;
+        _parseFailures = previous._parseFailures;
+        FailureReason = previous.FailureReason;
+    }
+
     private void Fail(string reason)
     {
         FailureReason = reason;

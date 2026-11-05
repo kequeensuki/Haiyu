@@ -56,7 +56,7 @@ public sealed class GameDataExportService
     private readonly Action<SessionKeyLoader> _loadKey;
     private readonly Func<GameDataExportResult, DateTimeOffset, string?> _write;
 
-    public GameDataExportService() : this(() => new NpcapUdpCapture(), LoadPrivateKey, InventoryJsonWriter.TryWrite) { }
+    public GameDataExportService() : this(() => new MultiInterfaceUdpCapture(), LoadPrivateKey, InventoryJsonWriter.TryWrite) { }
 
     internal GameDataExportService(Func<IUdpCapture> createCapture, Action<SessionKeyLoader> loadKey,
         Func<GameDataExportResult, DateTimeOffset, string?> write)
@@ -82,6 +82,7 @@ public sealed class GameDataExportService
         using var capture = _createCapture();
         var sessionStart = DateTimeOffset.Now;
         var captured = 0;
+        var decodedTotal = 0;
         var updates = 0;
         var writtenVersions = new Dictionary<uint, int>();
         var lastAttempts = new Dictionary<uint, long>();
@@ -89,7 +90,53 @@ public sealed class GameDataExportService
         var connections = new Dictionary<uint, KcpConnection>();
         var streams = new Dictionary<uint, KcpStreamRebuilder>();
         var states = new Dictionary<uint, InventoryCaptureState>();
+        var serverAddresses = new Dictionary<uint, string>();
+        var sessionFamilies = new Dictionary<uint, uint>();
+        var adaptive = capture as IAdaptiveUdpCapture;
+        uint? lastVerifiedConnection = null;
         GameDataExportResult? lastResult = null;
+
+        void RemoveConnection(uint conv)
+        {
+            if (streams.Remove(conv, out var stream)) stream.Clear();
+            connections.Remove(conv);
+            serverAddresses.Remove(conv);
+            sessionFamilies.Remove(conv);
+            writtenVersions.Remove(conv);
+            lastAttempts.Remove(conv);
+            if (states.Remove(conv, out var state)) state.Dispose();
+        }
+
+        void DropCandidate(uint conv, string reason)
+        {
+            RemoveConnection(conv);
+            Report(progress, GameDataExportStage.Capturing, 10, $"忽略无法验证的候选连接：{reason}");
+        }
+
+        void Consume(uint conv, Action<InventoryCaptureState> read, UdpFrame packet, Func<bool>? freshKcp = null)
+        {
+            var state = states[conv];
+            var verifiedBefore = state.HasVerifiedTraffic;
+            var framesBefore = state.VerifiedFrames;
+            var decodedBefore = state.DecodedOnConnection;
+            try { read(state); }
+            catch (InvalidDataException ex) when (!verifiedBefore && !state.HasVerifiedTraffic)
+            {
+                // 未确认的候选连接不能让已确认的游戏会话终止。
+                DropCandidate(conv, ex.Message);
+                return;
+            }
+            finally { decodedTotal += state.DecodedOnConnection - decodedBefore; }
+            if (state.HasVerifiedTraffic && (state.VerifiedFrames != framesBefore || (verifiedBefore && freshKcp?.Invoke() == true)))
+            {
+                // 新连接确认后淘汰同一会话的旧传输，防止旧的待写快照覆盖新数据。
+                var family = sessionFamilies[conv];
+                foreach (var previous in states.Keys.Where(k => k != conv && sessionFamilies[k] == family).ToArray())
+                    RemoveConnection(previous);
+                lastVerifiedConnection = conv;
+                adaptive?.ConfirmInterface(packet);
+            }
+        }
         try
         {
             Report(progress, GameDataExportStage.Capturing, 0, "正在准备网卡");
@@ -98,9 +145,15 @@ public sealed class GameDataExportService
             Report(progress, GameDataExportStage.Capturing, 5, "正在等待游戏连接", captureReady: true);
             while (!cancellationToken.IsCancellationRequested)
             {
-                foreach (var stream in streams.Values)
-                    stream.ValidatePending();
-                var decodedBefore = states.Values.Sum(s => s.DecodedFrames);
+                foreach (var pair in streams.ToArray())
+                {
+                    try { pair.Value.ValidatePending(); }
+                    catch (InvalidDataException ex) when (!states[pair.Key].HasVerifiedTraffic)
+                    {
+                        DropCandidate(pair.Key, ex.Message);
+                    }
+                }
+                var decodedBefore = decodedTotal;
                 var packet = capture.TryRead();
                 if (packet is not null)
                 {
@@ -109,32 +162,57 @@ public sealed class GameDataExportService
                         captured++;
                         if (HandshakeScanner.TryParseHandshakeResponse(
                             packet.Payload.Span, packet.SrcPort, packet.DstPort, out var connection)
-                            && connection is not null && !connections.ContainsKey(connection.Conv))
+                            && connection is not null)
                         {
+                            if (!connections.ContainsKey(connection.Conv))
+                            {
+                                streams[connection.Conv] = new KcpStreamRebuilder();
+                                if (adaptive is { NetworkGeneration: > 0 } && lastVerifiedConnection is { } previous
+                                    && states.TryGetValue(previous, out var session) && session.SessionKey is not null)
+                                {
+                                    states[connection.Conv] = session.ForkForReconnect();
+                                    writtenVersions[connection.Conv] = writtenVersions.GetValueOrDefault(previous);
+                                    sessionFamilies[connection.Conv] = sessionFamilies[previous];
+                                }
+                                else
+                                {
+                                    states[connection.Conv] = new InventoryCaptureState(_keyLoader.CreateSession(), request.Scope);
+                                    sessionFamilies[connection.Conv] = connection.Conv;
+                                }
+                            }
+                            // 重连可改变本地地址/端口，但不会因此清除密钥及玩家信息。
                             connections[connection.Conv] = connection;
-                            streams[connection.Conv] = new KcpStreamRebuilder();
-                            states[connection.Conv] = new InventoryCaptureState(_keyLoader.CreateSession(), request.Scope);
+                            serverAddresses[connection.Conv] = packet.SrcIp;
                         }
                         else if (packet.Payload.Length >= 5 && packet.Payload.Span[0] == RawFrameTag)
                         {
                             var conv = BitConverter.ToUInt32(packet.Payload.Span[1..]);
-                            if (connections.TryGetValue(conv, out var owner) && packet.DstPort == owner.ClientPort)
-                                states[conv].Consume(packet.Payload.Span[5..].ToArray());
+                            if (connections.TryGetValue(conv, out var owner) && packet.DstPort == owner.ClientPort
+                                && packet.SrcPort == owner.ServerPort && serverAddresses[conv] == packet.SrcIp)
+                                Consume(conv, s => s.ConsumeRaw(packet.Payload.Span[5..].ToArray()), packet);
                         }
                         else
                         {
-                            foreach (var pair in connections)
+                            foreach (var pair in connections.ToArray())
                             {
-                                var owner = pair.Value;
-                                if (packet.SrcPort != owner.ServerPort || packet.DstPort != owner.ClientPort)
+                                if (!connections.TryGetValue(pair.Key, out var owner)) continue;
+                                if (packet.SrcPort != owner.ServerPort || packet.DstPort != owner.ClientPort
+                                    || serverAddresses[pair.Key] != packet.SrcIp)
                                     continue;
                                 if (!KcpSegment.TryParseMany(packet.Payload.Span, packet.Payload,
                                     owner.CrcEnabled, out var segments))
                                     continue;
-                                foreach (var segment in segments)
-                                    if (segment.Conv == owner.Conv)
-                                        streams[pair.Key].Add(segment);
-                                states[pair.Key].Consume(streams[pair.Key]);
+                                var matching = segments.Where(s => s.Conv == owner.Conv && s.Cmd == KcpSegment.CmdPush).ToArray();
+                                if (matching.Length == 0) continue;
+                                var stream = streams[pair.Key];
+                                var hasFreshSegments = false;
+                                Consume(pair.Key, s =>
+                                {
+                                    var before = stream.SegmentCount;
+                                    foreach (var segment in matching) stream.Add(segment);
+                                    hasFreshSegments = stream.SegmentCount > before;
+                                    s.Consume(stream);
+                                }, packet, () => hasFreshSegments);
                             }
                         }
                     }
@@ -148,7 +226,10 @@ public sealed class GameDataExportService
                     await Task.Delay(5, CancellationToken.None).ConfigureAwait(false);
                 }
 
-                if (states.Values.Sum(s => s.DecodedFrames) > decodedBefore)
+                while (adaptive?.TakeDiagnostic() is { } diagnostic)
+                    Report(progress, GameDataExportStage.Capturing, 10, diagnostic);
+
+                if (decodedTotal > decodedBefore)
                     Report(progress, GameDataExportStage.Capturing, 50, "已解析新的背包数据", hasDataUpdate: true);
 
                 foreach (var pair in states)
@@ -205,12 +286,12 @@ public sealed class GameDataExportService
                         updates++;
                 }
             }
-            return lastResult ?? Failure("监控已停止，尚未取得完整背包及玩家身份信息，未生成导出文件。", captured, states.Values.Sum(s => s.DecodedFrames), null);
+            return lastResult ?? Failure("监控已停止，尚未取得完整背包及玩家身份信息，未生成导出文件。", captured, decodedTotal, null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             Report(progress, GameDataExportStage.Failed, 100, ex.Message);
-            return Failure(ex.Message, captured, states.Values.Sum(s => s.DecodedFrames), null);
+            return Failure(ex.Message, captured, decodedTotal, null);
         }
         finally
         {

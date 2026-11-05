@@ -91,6 +91,9 @@ internal static class NpcapNative
     );
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int pcap_setnonblock(IntPtr handle, int nonblock, [Out] byte[] errbuf);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
     internal static extern void pcap_close(IntPtr handle);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
