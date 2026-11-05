@@ -113,14 +113,18 @@ public sealed class GameDataExportService
             Report(progress, GameDataExportStage.Capturing, 10, $"忽略无法验证的候选连接：{reason}");
         }
 
+        bool IsCurrentSession(uint conv) => lastVerifiedConnection is not { } current
+            || !sessionFamilies.TryGetValue(current, out var family) || sessionFamilies[conv] == family;
+
         void Consume(uint conv, Action<InventoryCaptureState> read, UdpFrame packet, Func<bool>? freshKcp = null)
         {
             var state = states[conv];
             var verifiedBefore = state.HasVerifiedTraffic;
             var framesBefore = state.VerifiedFrames;
+            var identityBefore = state.IdentityVersion;
             var decodedBefore = state.DecodedOnConnection;
             try { read(state); }
-            catch (InvalidDataException ex) when (!verifiedBefore && !state.HasVerifiedTraffic)
+            catch (InvalidDataException ex) when ((!verifiedBefore && !state.HasVerifiedTraffic) || !IsCurrentSession(conv))
             {
                 // 未确认的候选连接不能让已确认的游戏会话终止。
                 DropCandidate(conv, ex.Message);
@@ -131,9 +135,13 @@ public sealed class GameDataExportService
             {
                 // 新连接确认后淘汰同一会话的旧传输，防止旧的待写快照覆盖新数据。
                 var family = sessionFamilies[conv];
+                var identityChanged = state.IdentityVersion != identityBefore;
+                if (!identityChanged && !IsCurrentSession(conv)) return;
                 foreach (var previous in states.Keys.Where(k => k != conv && sessionFamilies[k] == family).ToArray())
                     RemoveConnection(previous);
-                lastVerifiedConnection = conv;
+                // 旧连接的后台 KCP 包只能确认捕获接口，不能把当前玩家切回旧账号。
+                if (identityChanged || state.VerifiedFrames != framesBefore || lastVerifiedConnection is null)
+                    lastVerifiedConnection = conv;
                 adaptive?.ConfirmInterface(packet);
             }
         }
@@ -148,7 +156,7 @@ public sealed class GameDataExportService
                 foreach (var pair in streams.ToArray())
                 {
                     try { pair.Value.ValidatePending(); }
-                    catch (InvalidDataException ex) when (!states[pair.Key].HasVerifiedTraffic)
+                    catch (InvalidDataException ex) when (!states[pair.Key].HasVerifiedTraffic || !IsCurrentSession(pair.Key))
                     {
                         DropCandidate(pair.Key, ex.Message);
                     }
@@ -234,6 +242,7 @@ public sealed class GameDataExportService
 
                 foreach (var pair in states)
                 {
+                    if (!IsCurrentSession(pair.Key)) continue;
                     var state = pair.Value;
                     if (state.TakeDiagnostic() is { } diagnostic)
                         Report(progress, GameDataExportStage.Capturing, 20, diagnostic);
@@ -260,20 +269,35 @@ public sealed class GameDataExportService
                         updates++;
                     }
                 }
-                if (Environment.TickCount64 - lastReport >= 2000 && lastResult is null)
+                if (Environment.TickCount64 - lastReport >= 2000)
                 {
                     lastReport = Environment.TickCount64;
-                    var best = states.Values.OrderByDescending(s => s.ParsedCategories).FirstOrDefault();
-                    var message = !states.Values.Any(s => s.SessionKey is not null)
-                        ? $"等待游戏登录与会话密钥（UDP {captured} 帧）"
-                        : best?.ParsedCategories == 4 && best.PlayerId.Current != PlayerIdResolver.Phase.Resolved
-                            ? "背包数据已解析（4/4），等待玩家身份信息"
-                            : $"已取得会话密钥，解析背包数据（{best?.ParsedCategories ?? 0}/4）";
-                    Report(progress, GameDataExportStage.Capturing, 10 + (best?.ParsedCategories ?? 0) * 10, message);
+                    var current = lastVerifiedConnection is { } id && states.TryGetValue(id, out var active)
+                        ? active : states.Values.OrderByDescending(s => s.ParsedCategories).FirstOrDefault();
+                    if (current is { Ready: true } && lastResult is { Success: true }
+                        && lastResult.PlayerId == current.PlayerId.PlayerId)
+                    {
+                        ReportMonitoring(progress, lastResult);
+                    }
+                    else if (current is { Ready: true } && lastResult is { Success: false }
+                        && lastResult.PlayerId == current.PlayerId.PlayerId)
+                    {
+                        Report(progress, GameDataExportStage.Exporting, 85, lastResult.Message);
+                    }
+                    else
+                    {
+                        var message = current?.SessionKey is null
+                            ? $"等待游戏登录与会话密钥（UDP {captured} 帧）"
+                            : current.PlayerId.Current != PlayerIdResolver.Phase.Resolved
+                                ? "已取得会话密钥，正在等待玩家身份信息"
+                                : $"玩家 {current.PlayerId.PlayerId}：正在解析背包数据（{current.ParsedCategories}/4）";
+                        Report(progress, GameDataExportStage.Capturing, 10 + (current?.ParsedCategories ?? 0) * 10, message);
+                    }
                 }
             }
             foreach (var pair in states)
             {
+                if (!IsCurrentSession(pair.Key)) continue;
                 var state = pair.Value;
                 if (state.Ready && writtenVersions.GetValueOrDefault(pair.Key) != state.Version)
                 {
@@ -347,14 +371,19 @@ public sealed class GameDataExportService
 
         if (path is null)
             result = result with { Success = false, Message = "JSON 写入失败，保留上次文件，稍后重试。" };
-        Report(progress, path is null ? GameDataExportStage.Exporting : GameDataExportStage.Completed,
-            path is null ? 85 : 100, path is null
-                ? result.Message
-                : (firstExport ? $"导出完成：{path}" : $"数据已更新：{path}"));
+        if (path is null)
+            Report(progress, GameDataExportStage.Exporting, 85, result.Message);
+        else
+            ReportMonitoring(progress, result);
 
         await Task.CompletedTask.ConfigureAwait(false);
         return result;
     }
+
+    private static void ReportMonitoring(IProgress<GameDataExportProgress> progress, GameDataExportResult result) =>
+        progress.Report(new(GameDataExportStage.Monitoring, 100,
+            $"监控中：玩家 {result.PlayerId}，已更新 {result.UpdateCount} 次\n最新文件：{result.OutputJsonPath}",
+            PlayerId: result.PlayerId, OutputJsonPath: result.OutputJsonPath, UpdateCount: result.UpdateCount));
 
     private static List<T> Flatten<T>(Dictionary<ushort, List<T>> map) => map.Values.SelectMany(v => v).ToList();
     /// <summary>

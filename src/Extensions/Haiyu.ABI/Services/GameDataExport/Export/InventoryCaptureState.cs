@@ -12,6 +12,7 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
     internal byte[]? SessionKey => keyLoader.SessionKey;
     internal bool HasVerifiedTraffic { get; private set; }
     internal int VerifiedFrames { get; private set; }
+    internal int IdentityVersion { get; private set; }
     public void Dispose() => keyLoader.Dispose();
     internal PlayerIdResolver PlayerId { get; } = new();
     internal Dictionary<ushort, List<GameNormalItem>> NormalItems { get; } = new();
@@ -53,6 +54,7 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
                         VerifiedFrames++;
                         if (keyLoader.Generation != generation)
                         {
+                            IdentityVersion++;
                             ClearSnapshots();
                             PlayerId.NotifyRelogin();
                             Diagnostic = "已取得新会话密钥，等待玩家身份及完整背包。";
@@ -80,6 +82,7 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
                     {
                         if (previousId > 0 && previouslyResolved)
                             ClearSnapshots();
+                        IdentityVersion++;
                         Diagnostic = $"已切换至玩家 {PlayerId.PlayerId}，等待完整背包。";
                     }
                 }
@@ -130,7 +133,8 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
         var next = new InventoryCaptureState(keyLoader.CreateSession(resume: true), scope)
         {
             DecodedFrames = DecodedFrames,
-            Version = Version
+            Version = Version,
+            IdentityVersion = IdentityVersion
         };
         next.PlayerId.RestoreFrom(PlayerId);
         foreach (var pair in NormalItems) next.NormalItems[pair.Key] = pair.Value.ToList();

@@ -13,6 +13,7 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
         internal Task<GameDataExportResult> Task = null!;
         internal bool Active = true;
         internal long LastDataTick;
+        internal bool SawGameProcess;
     }
 
     private readonly object _gate = new();
@@ -25,8 +26,10 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
     private readonly TimeSpan _stopGrace;
     private Session? _session;
     private bool _disposed;
+    private IDisposable? _gameExitSubscription;
     private (string Message, int Percentage)? _lastProgress;
     private GameDataExportResult? _lastResult;
+    private GameDataExportProgress? _lastBusinessProgress;
 
     internal GameDataExportLauncher(
         Func<IProgress<IPrivilegedProgress<GameDataExportProgress>>, CancellationToken, Task<GameDataExportResult>> invoke,
@@ -38,12 +41,13 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
         _isGameRunning = isGameRunning;
         _clock = clock ?? TimeProvider.System;
         _idleTimeout = idleTimeout ?? TimeSpan.FromMinutes(30);
-        _probeInterval = probeInterval ?? TimeSpan.FromSeconds(60);
+        _probeInterval = probeInterval ?? TimeSpan.FromSeconds(2);
         _readyTimeout = readyTimeout ?? TimeSpan.FromSeconds(15);
         _stopGrace = stopGrace ?? TimeSpan.FromSeconds(10);
     }
 
     public (string Message, int Percentage)? LastProgress { get { lock (_gate) return _lastProgress; } }
+    public GameDataExportProgress? LastBusinessProgress { get { lock (_gate) return _lastBusinessProgress; } }
     public GameDataExportResult? LastResult { get { lock (_gate) return _lastResult; } }
     public bool IsSessionActive { get { lock (_gate) return _session is { Active: true }; } }
     public event Action<string, int>? ProgressChanged;
@@ -60,10 +64,11 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
                 sessionTask = existing.Task;
                 return false;
             }
-            var session = new Session { LastDataTick = _clock.GetTimestamp() };
+            var session = new Session { LastDataTick = _clock.GetTimestamp(), SawGameProcess = _isGameRunning() };
             _session = session;
             _lastProgress = null;
             _lastResult = null;
+            _lastBusinessProgress = null;
             sessionTask = session.Task = Task.Run(() => RunSessionAsync(session));
         }
         StateChanged?.Invoke();
@@ -73,7 +78,7 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
     private async Task<GameDataExportResult> RunSessionAsync(Session session)
     {
         using var watcherStop = new CancellationTokenSource();
-        var watcher = WatchIdleAsync(session, watcherStop.Token);
+        var watcher = WatchSessionAsync(session, watcherStop.Token);
         GameDataExportResult result;
         try
         {
@@ -116,10 +121,14 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
             if (!ReferenceEquals(_session, session) || !session.Active)
                 return;
             _lastProgress = (message, percentage);
+            if (progress.Data is not null) _lastBusinessProgress = progress.Data;
             if (progress.Data?.CaptureReady == true && !session.Stop.IsCancellationRequested)
                 session.Ready.TrySetResult(true);
             if (progress.Data?.HasDataUpdate == true)
+            {
                 session.LastDataTick = _clock.GetTimestamp();
+                session.SawGameProcess = true;
+            }
         }
         ProgressChanged?.Invoke(message, percentage);
     }
@@ -141,7 +150,7 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
         }
     }
 
-    private async Task WatchIdleAsync(Session session, CancellationToken token)
+    private async Task WatchSessionAsync(Session session, CancellationToken token)
     {
         try
         {
@@ -153,8 +162,11 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
                     if (!session.Active)
                         return;
                     if (_isGameRunning())
+                    {
+                        session.SawGameProcess = true;
                         session.LastDataTick = _clock.GetTimestamp();
-                    else if (_clock.GetElapsedTime(session.LastDataTick) >= _idleTimeout)
+                    }
+                    else if (session.SawGameProcess || _clock.GetElapsedTime(session.LastDataTick) >= _idleTimeout)
                     {
                         // 与手动停止使用同一业务取消通道；本 watcher 无需等待自己结束。
                         session.Stop.Cancel();
@@ -164,6 +176,19 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
             }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+    }
+
+    /// <summary>复用游戏启动器的退出通知。回登录界面仍有进程，不触发停止。</summary>
+    public void NotifyGameExited()
+    {
+        lock (_gate)
+        {
+            if (_session is not { Active: true } session) return;
+            _lastProgress = ("游戏已退出，正在停止抓包并保存数据。", 100);
+            _lastBusinessProgress = null;
+            session.Stop.Cancel();
+        }
+        ProgressChanged?.Invoke("游戏已退出，正在停止抓包并保存数据。", 100);
     }
 
     public async Task<GameDataExportResult?> StopAsync()
@@ -200,14 +225,18 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
 
     public void Dispose()
     {
+        IDisposable? subscription;
         lock (_gate)
         {
             if (_disposed)
                 return;
             _disposed = true;
+            subscription = _gameExitSubscription;
+            _gameExitSubscription = null;
             if (_session is { Active: true } session)
                 session.Stop.Cancel();
         }
+        subscription?.Dispose();
     }
 
     private static GameDataExportResult Fail(string message) => new(false, message, null, null, 0, 0, null);

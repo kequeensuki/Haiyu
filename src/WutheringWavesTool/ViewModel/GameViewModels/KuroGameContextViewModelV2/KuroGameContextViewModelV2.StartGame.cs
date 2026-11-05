@@ -15,10 +15,19 @@ partial class KuroGameContextViewModelV2
     {
         if (_buttonAction == ButtonActionType.StartGame)
         {
+            if (GameContext.GameType == GameType.Waves)
+            {
+                try
+                {
+                    await Instance.Host.Services.GetRequiredService<Services.GameDataExportLauncher>()
+                        .ObserveGameExitAsync(GameContext.GameEventPublisher);
+                }
+                catch (Exception ex) { Logger.WriteError($"订阅游戏退出通知失败：{ex.Message}"); }
+            }
             // ★ 游戏数据导出（v2 自动启动）：先让监控会话跑起来再启动游戏——
             //   会话密钥只在登录握手时下发，抓包必须先于游戏启动。
             //   失败静默降级（TipShow 提示，不阻断游戏启动）。
-            if (await AppSettings.GetGameDataExportEnableAsync() is true)
+            if (GameContext.GameType == GameType.Waves && await AppSettings.GetGameDataExportEnableAsync() is true)
             {
                 await StartGameDataExportSessionAsync();
             }

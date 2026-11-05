@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../Extensions/ABI/ABIRuntime/ABIRuntime.csproj" />
+    <ProjectReference Include="../../Waves.Core/Waves.Core.csproj" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <!-- 链接实际会话和 VM 逻辑；Windows ABI 启动、窗口 API 由测试边界替身提供。 -->
     <Compile Include="../../WutheringWavesTool/Services/GameDataExportLauncher.cs" Link="GameDataExportLauncher.cs" />

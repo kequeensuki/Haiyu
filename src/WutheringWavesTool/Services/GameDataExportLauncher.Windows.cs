@@ -20,6 +20,35 @@ public sealed partial class GameDataExportLauncher
         return result.Data ?? Fail(result.Message);
     }
 
+    private object? _gameExitSource;
+
+    public async Task ObserveGameExitAsync(Waves.Core.Contracts.Events.IGameEventPublisher<Waves.Core.Models.GameContextOutputArgs> source)
+    {
+        lock (_gate)
+            if (_disposed || ReferenceEquals(_gameExitSource, source)) return;
+        var subscription = await source.SubscribeAsync(args =>
+        {
+            lock (_gate)
+            {
+                if (!_disposed && ReferenceEquals(_gameExitSource, source)
+                    && args.Type == Waves.Core.Models.Enums.GameContextActionType.GameExit)
+                    NotifyGameExited();
+            }
+            return ValueTask.CompletedTask;
+        });
+        IDisposable? previous;
+        lock (_gate)
+        {
+            previous = _disposed ? subscription : _gameExitSubscription;
+            if (!_disposed)
+            {
+                _gameExitSubscription = subscription;
+                _gameExitSource = source;
+            }
+        }
+        previous?.Dispose();
+    }
+
     private static bool IsGameRunning()
     {
         try

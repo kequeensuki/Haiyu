@@ -17,32 +17,40 @@ namespace Haiyu.ViewModel.ToolkitsViewModel;
 public sealed partial class GameDataExportViewModel : ViewModelBase
 {
     private readonly Services.GameDataExportLauncher _launcher;
-    private readonly IProgress<bool> _stateUpdates;
+    private readonly Action _refreshOnUi;
 
     public GameDataExportViewModel(IViewFactorys viewFactorys)
     {
         ViewFactorys = viewFactorys;
         _launcher = Instance.Host.Services.GetRequiredService<Services.GameDataExportLauncher>();
         // 窗口仅观察应用会话，不持有 await session 的长期 continuation。
-        _stateUpdates = new Progress<bool>(_ =>
+        var dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread()
+            ?? throw new InvalidOperationException("导出窗口必须在 UI 线程创建。");
+        _refreshOnUi = () =>
         {
-            if (!IsDisposed)
-                SynchronizeSession();
-        });
+            if (dispatcher.HasThreadAccess)
+            {
+                if (!IsDisposed) SynchronizeSession();
+            }
+            else dispatcher.TryEnqueue(() => { if (!IsDisposed) SynchronizeSession(); });
+        };
         _launcher.ProgressChanged += OnProgressChanged;
         _launcher.StateChanged += OnStateChanged;
         SynchronizeSession();
     }
 
-    private void OnProgressChanged(string message, int percentage) => _stateUpdates.Report(true);
-    private void OnStateChanged() => _stateUpdates.Report(true);
+    private void OnProgressChanged(string message, int percentage) => _refreshOnUi();
+    private void OnStateChanged() => _refreshOnUi();
 
     private void SynchronizeSession()
     {
         IsExporting = _launcher.IsSessionActive;
         if (_launcher.LastProgress is { } progress)
         {
-            ProgressMessage = progress.Message;
+            var business = _launcher.LastBusinessProgress;
+            ProgressMessage = business is { Stage: GameDataExportStage.Monitoring, OutputJsonPath: not null }
+                ? $"监控中：玩家 {business.PlayerId}，已更新 {business.UpdateCount} 次\n最新文件：{business.OutputJsonPath}"
+                : progress.Message;
             ProgressValue = progress.Percentage;
         }
         else if (IsExporting)

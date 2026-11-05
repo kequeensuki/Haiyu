@@ -41,3 +41,16 @@ namespace Haiyu.Services
             => throw new NotSupportedException("此测试不执行 Windows Shell。");
     }
 }
+
+namespace Microsoft.UI.Dispatching
+{
+    public sealed class DispatcherQueue
+    {
+        private readonly SynchronizationContext _context;
+        private readonly int _owner = Environment.CurrentManagedThreadId;
+        private DispatcherQueue(SynchronizationContext context) => _context = context;
+        public static DispatcherQueue? GetForCurrentThread() => SynchronizationContext.Current is { } context ? new(context) : null;
+        public bool HasThreadAccess => Environment.CurrentManagedThreadId == _owner;
+        public bool TryEnqueue(Action callback) { _context.Post(_ => callback(), null); return true; }
+    }
+}

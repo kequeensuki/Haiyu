@@ -47,6 +47,9 @@ public enum GameDataExportStage
 
     Completed = 3,
     Failed = 4,
+
+    /// <summary>快照已导出，抓包会话仍在运行。</summary>
+    Monitoring = 5,
 }
 
 /// <summary>导出进度。</summary>
@@ -56,7 +59,10 @@ public sealed partial record GameDataExportProgress(
     [property: JsonPropertyName("percentage")] int Percentage,
     [property: JsonPropertyName("message")] string Message,
     [property: JsonPropertyName("captureReady")] bool CaptureReady = false,
-    [property: JsonPropertyName("hasDataUpdate")] bool HasDataUpdate = false
+    [property: JsonPropertyName("hasDataUpdate")] bool HasDataUpdate = false,
+    [property: JsonPropertyName("playerId")] int PlayerId = 0,
+    [property: JsonPropertyName("outputJsonPath")] string? OutputJsonPath = null,
+    [property: JsonPropertyName("updateCount")] int UpdateCount = 0
 );
 
 #endregion
