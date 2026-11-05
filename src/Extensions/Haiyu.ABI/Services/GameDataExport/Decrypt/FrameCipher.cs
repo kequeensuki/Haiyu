@@ -171,7 +171,16 @@ public static class FrameCipher
                 using (var input = new MemoryStream(compressed))
                 using (var zlib = new ZLibStream(input, CompressionMode.Decompress))
                 {
-                    written = zlib.Read(output, 0, output.Length);
+                    written = 0;
+                    while (written < output.Length)
+                    {
+                        var read = zlib.Read(output, written, output.Length - written);
+                        if (read == 0)
+                            break;
+                        written += read;
+                    }
+                    if (zlib.ReadByte() != -1)
+                        return false;
                 }
 
                 // native: `if (a2 != v9) { 日志; result = 0; }` —— 长度严格校验

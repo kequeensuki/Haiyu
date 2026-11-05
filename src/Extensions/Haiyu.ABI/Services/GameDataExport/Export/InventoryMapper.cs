@@ -86,9 +86,6 @@ public static class InventoryMapper
     private static T? Parse<T>(byte[] payload)
         where T : class, Google.Protobuf.IMessage<T>, new()
     {
-        if (payload.Length == 0)
-            return null;
-
         try
         {
             var message = new T();

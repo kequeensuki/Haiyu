@@ -19,14 +19,15 @@ namespace Haiyu.ABI.Services.GameDataExport.Rebuild;
 ///   ③ 会话结束时调用 <see cref="Clear"/>（宿主常驻进程，防残留引用）。
 ///
 /// ★ 虚拟流模型：全部段按 sn 升序依次排布成一条逻辑流；水位是逻辑流上的
-///   字节位移。断档（sn 缺失）不阻塞——与 v1 的 Build() 语义一致（按现有段拼），
-///   缺失段重传到达后其内容自然并入后续视图。
+///   字节位移。实时增量视图遇到 sn 缺失会等待补齐，不能跨缺口拼接帧。
+///   已消费并回收的 sn 保留逻辑水位，迟到的重传不会重复入流。
 /// </summary>
 public sealed class KcpStreamRebuilder
 {
     private readonly Dictionary<uint, byte[]> _segments = new();
     private readonly object _gate = new();
     private long _consumedBytes;
+    private uint _nextSn;
 
     /// <summary>已收到的不同 sn 数量。</summary>
     public int SegmentCount
@@ -64,7 +65,7 @@ public sealed class KcpStreamRebuilder
         lock (_gate)
         {
             // 重复 sn（重传）保留首次到达的那份
-            if (_segments.ContainsKey(segment.Sn))
+            if (unchecked((int)(segment.Sn - _nextSn)) < 0 || _segments.ContainsKey(segment.Sn))
                 return;
 
             // ★ 长存拷贝：解析输入是租借缓冲的切片，流必须拥有独立内存。
@@ -193,6 +194,7 @@ public sealed class KcpStreamRebuilder
                 if (end <= _consumedBytes)
                 {
                     droppedBytes += payload.Length; // 整体已消费，丢弃并平移坐标系
+                    _nextSn = unchecked(sn + 1);
                     continue;
                 }
 
@@ -209,13 +211,27 @@ public sealed class KcpStreamRebuilder
         {
             _segments.Clear();
             _consumedBytes = 0;
+            _nextSn = 0;
         }
+    }
+
+    // 抓包从握手开始，KCP sn 从 0 起；缺段时不能把后面的字节接到半帧上。
+    private KeyValuePair<uint, byte[]>[] ContiguousSegments()
+    {
+        var result = new List<KeyValuePair<uint, byte[]>>();
+        var sn = _nextSn;
+        while (_segments.TryGetValue(sn, out var payload))
+        {
+            result.Add(new(sn, payload));
+            sn = unchecked(sn + 1);
+        }
+        return result.ToArray();
     }
 
     /// <summary>水位之后的新增视图（调用方须持锁）。跨界段从水位处裁剪起返回。</summary>
     private (byte[] Buffer, long Consumed) BuildIncrementalLocked()
     {
-        var ordered = _segments.OrderBy(pair => pair.Key).ToArray();
+        var ordered = ContiguousSegments();
 
         // 定位水位：跳过整体已消费的段，跨界段从段内偏移裁剪
         long cursor = 0;

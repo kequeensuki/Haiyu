@@ -50,6 +50,16 @@ public sealed class SessionKeyLoader : IDisposable
         _privateKey = rsa;
     }
 
+    /// <summary>共享私钥来源，但每条连接拥有独立的会话密钥和生命周期。</summary>
+    internal SessionKeyLoader CreateSession()
+    {
+        if (_privateKey is null)
+            throw new InvalidOperationException("尚未载入私钥。");
+        var session = new SessionKeyLoader();
+        session.LoadPrivateKeyPem(_privateKey.ExportPkcs8PrivateKeyPem());
+        return session;
+    }
+
     /// <summary>
     /// 若该帧是 112，尝试解出会话密钥。
     /// 返回 <c>true</c> 表示本次成功解出（或此前已解出）。

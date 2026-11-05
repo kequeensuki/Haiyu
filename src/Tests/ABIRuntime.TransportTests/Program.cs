@@ -12,7 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace ABIRuntime.TransportTests;
 
-internal static class Program
+internal static partial class Program
 {
     private static readonly List<string> Results = [];
     private static int _lastJsonMonitorSize;
@@ -30,12 +30,18 @@ internal static class Program
             ("并发独立请求管道", TestConcurrentPipesAsync),
             ("请求 ID 关联取消", TestCancellationMessageAsync),
             ("KCP 流水位/增量/Compact 语义", TestKcpStreamWatermarkAsync),
+            ("导出单消费者：加密/半帧/回收/playerId/持续更新", TestInventoryCaptureAsync),
             ("playerId 状态机：提取/重试/Id=0/超时/重登", TestPlayerIdResolverAsync),
             ("原子落盘：会话路径/tmp+Replace/更新覆盖", TestAtomicWriteAsync),
             ("ComputerMonitorService 实际采样", TestDirectMonitorAsync),
             ("ComputerMonitorService 管道进度链", TestMonitorServicePipeAsync),
             ("控制管道与独立请求管道完整调用", TestElevatedHostRoutingAsync),
         };
+
+        if (args.Contains("--game-data-export"))
+            tests = tests.Where(t => t.Run == TestKcpStreamWatermarkAsync
+                || t.Run == TestInventoryCaptureAsync || t.Run == TestPlayerIdResolverAsync
+                || t.Run == TestAtomicWriteAsync).ToArray();
 
         int failures = 0;
         foreach ((string name, Func<Task> run) in tests)
@@ -53,7 +59,7 @@ internal static class Program
             }
         }
 
-        if (args.Length > 0)
+        if (args.Length > 0 && !args.Contains("--game-data-export"))
         {
             try
             {
