@@ -53,6 +53,12 @@ public sealed class GameDataExportService
     /// </summary>
     private readonly SessionKeyLoader _keyLoader = new();
 
+    /// <summary>playerId 解析状态机（v2 §2.7：快速失败）。</summary>
+    private readonly PlayerIdResolver _playerIdResolver = new();
+
+    /// <summary>playerId 快速失败的原因（终止会话时写入进度消息与失败结果）。</summary>
+    private string? _playerIdAbortReason;
+
     public PrivilegedServiceContract<
         GameDataExportRequest,
         GameDataExportProgress,
@@ -312,6 +318,24 @@ public sealed class GameDataExportService
                     pumpState, progress, onFrame, cancellationToken
                 );
 
+                // ★ playerId 快速失败（v2 §2.7）：解析失败/超时 → 终止会话不落盘
+                if (_playerIdResolver.Current == PlayerIdResolver.Phase.Failed)
+                {
+                    _playerIdAbortReason ??= "未能获取玩家 playerId，导出已停止。";
+                    Report(progress, GameDataExportStage.Failed, 100, _playerIdAbortReason);
+                    ReleaseCaptureState(streams, receivedByConnection);
+                    throw new InvalidOperationException(_playerIdAbortReason);
+                }
+
+                // playerId 超时节拍（密钥解出后才开始计时）
+                if (!_playerIdResolver.OnTick())
+                {
+                    _playerIdAbortReason = _playerIdResolver.FailureReason;
+                    Report(progress, GameDataExportStage.Failed, 100, _playerIdAbortReason!);
+                    ReleaseCaptureState(streams, receivedByConnection);
+                    throw new InvalidOperationException(_playerIdAbortReason);
+                }
+
                 // ⑤ 完成条件（按连接）：该连接密钥已解 + 收齐全部目标 msgId
                 if (
                     _keyLoader.SessionKey is not null
@@ -558,11 +582,24 @@ public sealed class GameDataExportService
                     if (!keyResolved && frame.MsgId == MsgIdFilter.ProtoKeyResponse)
                     {
                         if (_keyLoader.TryResolve(frame))
+                        {
                             keyResolved = true;
+                            _playerIdResolver.NotifyKeyResolved();
+                        }
                     }
-                    else if (expected.Contains(frame.MsgId))
+                    else
                     {
-                        received.Add(frame.MsgId);
+                        // 目标 msgId 记录（完成判定用）
+                        if (expected.Contains(frame.MsgId))
+                            received.Add(frame.MsgId);
+
+                        // playerId 状态机：BasicInfoNotify 提取 / 失败计数
+                        if (!_playerIdResolver.TryFeed(frame))
+                        {
+                            // 快速失败（v2 §2.7）：终止会话，不落盘
+                            _playerIdAbortReason = _playerIdResolver.FailureReason;
+                            return;
+                        }
                     }
                 }
 

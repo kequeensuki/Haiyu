@@ -28,6 +28,13 @@ public static class MsgIdFilter
     /// <summary>会话密钥协商响应（明文），解密前置条件。</summary>
     public const ushort ProtoKeyResponse = 112;
 
+    /// <summary>
+    /// 玩家基础信息推送（登录后立即下发），<c>Id</c> 字段（field 15）即玩家 playerId。
+    /// 反编译实证：EMessageId.cs:81 BasicInfoNotify = 15380。
+    /// ★ 元数据：始终跟踪但<b>不计入</b>背包「收齐」判定。
+    /// </summary>
+    public const ushort BasicInfoNotify = 15380;
+
     /// <summary>推送完成标志，官方在此之后才发全量背包请求。</summary>
     public const ushort PushDataCompleteNotify = 113;
 

@@ -117,6 +117,19 @@ message ArrayIntInt {
 }
 
 // ══════════════════════════════════════════════════════════
+// 玩家标识（msgId 15380，Push，登录后立即下发）
+// ══════════════════════════════════════════════════════════
+
+// BasicInfoNotify —— 只需 Id 字段，用于导出目录按玩家分类
+// （PlayerInfoController.BasicInfoNotifyHandle: instance.SetId(basicInfoNotify.Id)）
+message BasicInfoNotify {
+  // ★ 其余 14 个字段（attributes/roleShowList/birthday 等）与导出无关，不建模——
+  //   protobuf 未知字段自动跳过，只取 field 15
+  int32 id = 15;   // ★ 字段号 15（不是 1），tag 120 = (15<<3)|0 varint，
+                   //   BasicInfoNotify.cs:670 IdFieldNumber = 15 实证
+}
+
+// ══════════════════════════════════════════════════════════
 // 背包：限时道具（msgId 20447）
 // ══════════════════════════════════════════════════════════
 

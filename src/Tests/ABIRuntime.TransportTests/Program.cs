@@ -30,6 +30,7 @@ internal static class Program
             ("并发独立请求管道", TestConcurrentPipesAsync),
             ("请求 ID 关联取消", TestCancellationMessageAsync),
             ("KCP 流水位/增量/Compact 语义", TestKcpStreamWatermarkAsync),
+            ("playerId 状态机：提取/重试/Id=0/超时/重登", TestPlayerIdResolverAsync),
             ("ComputerMonitorService 实际采样", TestDirectMonitorAsync),
             ("ComputerMonitorService 管道进度链", TestMonitorServicePipeAsync),
             ("控制管道与独立请求管道完整调用", TestElevatedHostRoutingAsync),
@@ -142,6 +143,88 @@ internal static class Program
         stream.Clear();
         Equal(0, stream.SegmentCount);
         Equal(0L, stream.ConsumedBytes);
+
+        await Task.CompletedTask;
+    }
+
+    /// <summary>序列化 BasicInfoNotify{Id}（手工 varint：tag 120 + 值）。</summary>
+    private static byte[] SerializeBasicInfo(int id)
+    {
+        // tag 120 = (15<<3)|0 (varint int32)
+        var header = new byte[] { 120 };
+        if (id < 0x80)
+            return [.. header, (byte)id];
+
+        // 多字节 varint（最多 5 字节 for int32）
+        var value = (uint)id;
+        var varint = new List<byte>();
+        while (value >= 0x80)
+        {
+            varint.Add((byte)(value | 0x80));
+            value >>= 7;
+        }
+        varint.Add((byte)value);
+        return [.. header, .. varint];
+    }
+
+    /// <summary>
+    /// playerId 状态机（v2 §2.6/2.7）：BasicInfoNotify field 15 提取、
+    /// 解析失败重试、Id=0 拒绝、60s 超时、重登重置。
+    /// （15380 是加密帧——回放无私钥解不开，故用合成 proto 验证解析链；真实
+    /// 密文路径由真机验证覆盖。）
+    /// </summary>
+    private static async Task TestPlayerIdResolverAsync()
+    {
+        var resolver = new Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver();
+
+        Haiyu.ABI.Services.GameDataExport.Decrypt.GatewayFrame MakeFrame(ushort msgId, byte[] payload) =>
+            new(Haiyu.ABI.Services.GameDataExport.Decrypt.GatewayMessageType.Push, 4, 0, 0, msgId, 0, payload, 0);
+
+        // ── 1) 密钥未解出时不计时（WaitingKey），喂普通帧不动作 ──
+        Equal(true, resolver.TryFeed(MakeFrame(999, [1, 2, 3])));
+        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.WaitingKey, resolver.Current);
+
+        // ── 2) 解析失败重试：第一次失败（坏 payload）不终止 ──
+        resolver.NotifyKeyResolved();
+        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.WaitingId, resolver.Current);
+        Equal(true, resolver.TryFeed(MakeFrame(15380, [0xFF, 0xFF, 0xFF]))); // 非法 protobuf
+        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.WaitingId, resolver.Current);
+
+        // ── 3) 合成 BasicInfoNotify{Id=123456} 提取成功 ──
+        var good = SerializeBasicInfo(123456);
+        Equal(true, resolver.TryFeed(MakeFrame(15380, good)));
+        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.Resolved, resolver.Current);
+        Equal(123456, resolver.PlayerId);
+
+        // ── 4) 60s 超时：WaitingId 阶段才计时；Resolved 后 OnTick 恒 true ──
+        //    （真实 60s 由时间驱动，这里只验证阶段门槛逻辑）
+        Equal(true, resolver.OnTick());
+
+        // ── 5) 重登重置：回到 WaitingId，旧 id 保留，新 id 到达后更新 ──
+        resolver.NotifyRelogin();
+        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.WaitingId, resolver.Current);
+        Equal(123456, resolver.PlayerId); // 旧值保留（新 id 解析成功前目录暂用旧值）
+
+        var relogin = SerializeBasicInfo(654321);
+        Equal(true, resolver.TryFeed(MakeFrame(15380, relogin)));
+        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.Resolved, resolver.Current);
+        Equal(654321, resolver.PlayerId);
+
+        // ── 6) Id=0 两次 → 第 1 次重试（true），第 2 次终止（false）──
+        var resolver2 = new Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver();
+        resolver2.NotifyKeyResolved();
+        var zero = SerializeBasicInfo(0);
+        Equal(true, resolver2.TryFeed(MakeFrame(15380, zero)));    // 第 1 次：重试
+        Equal(false, resolver2.TryFeed(MakeFrame(15380, zero)));   // 第 2 次：终止
+        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.Failed, resolver2.Current);
+        Equal(true, resolver2.FailureReason is not null);
+
+        // ── 7) 坏帧两次 → 第 1 次重试（true），第 2 次终止（false）──
+        var resolver3 = new Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver();
+        resolver3.NotifyKeyResolved();
+        Equal(true, resolver3.TryFeed(MakeFrame(15380, [0xFF, 0xFF])));
+        Equal(false, resolver3.TryFeed(MakeFrame(15380, [0xFF, 0xFF])));
+        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.Failed, resolver3.Current);
 
         await Task.CompletedTask;
     }
