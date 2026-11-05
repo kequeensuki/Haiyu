@@ -155,11 +155,12 @@
             </cui:SettingsCard>
             <cui:SettingsCard
                 Description="{x:Bind helper:LanguageService.GetString('Toolkit_GameDataExportDescription')}"
-                Header="{x:Bind helper:LanguageService.GetString('Toolkit_GameDataExportHeader')}">
+                Header="{x:Bind helper:LanguageService.GetString('Toolkit_GameDataExportHeader')}"
+                HorizontalContentAlignment="Right">
                 <cui:SettingsCard.HeaderIcon>
                     <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE8B7;" />
                 </cui:SettingsCard.HeaderIcon>
-                <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                <StackPanel Orientation="Horizontal" Spacing="8">
                     <CheckBox
                         VerticalAlignment="Center"
                         IsChecked="{x:Bind ViewModel.GameDataExportEnable, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
