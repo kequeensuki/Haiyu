@@ -35,6 +35,11 @@ internal sealed class ServiceInvoker<
             .ConfigureAwait(false);
 
         byte[] payload = MemoryPackSerializer.Serialize(output, ABIMemoryPack.Options);
+        // 业务取消可表示“收尾并返回”。取消后仍给最终结果 2 秒发送宽限，
+        // 小于客户端的 5 秒宽限；正常结果不新增超时。取消在写入中发生也适用。
+        using var resultTimeout = new CancellationTokenSource();
+        using var stopRegistration = cancellationToken.Register(
+            () => resultTimeout.CancelAfter(TimeSpan.FromSeconds(2)));
         await PipeProtocol
             .WriteAsync(
                 pipe,
@@ -47,7 +52,7 @@ internal sealed class ServiceInvoker<
                     100,
                     "操作完成"
                 ),
-                cancellationToken
+                resultTimeout.Token
             )
             .ConfigureAwait(false);
     }

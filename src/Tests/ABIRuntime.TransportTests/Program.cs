@@ -33,6 +33,9 @@ internal static partial class Program
             ("导出单消费者：加密/半帧/回收/playerId/持续更新", TestInventoryCaptureAsync),
             ("playerId 状态机：提取/重试/Id=0/超时/重登", TestPlayerIdResolverAsync),
             ("原子落盘：会话路径/tmp+Replace/更新覆盖", TestAtomicWriteAsync),
+            ("KCP 缺口超时和缓存上限", TestCaptureLimitsAsync),
+            ("导出服务写入失败重试及就绪/数据进度", TestExportPersistenceRetryAsync),
+            ("服务取消后最终结果仍送达", TestExportStopResultAsync),
             ("ComputerMonitorService 实际采样", TestDirectMonitorAsync),
             ("ComputerMonitorService 管道进度链", TestMonitorServicePipeAsync),
             ("控制管道与独立请求管道完整调用", TestElevatedHostRoutingAsync),
@@ -41,7 +44,13 @@ internal static partial class Program
         if (args.Contains("--game-data-export"))
             tests = tests.Where(t => t.Run == TestKcpStreamWatermarkAsync
                 || t.Run == TestInventoryCaptureAsync || t.Run == TestPlayerIdResolverAsync
-                || t.Run == TestAtomicWriteAsync).ToArray();
+                || t.Run == TestAtomicWriteAsync || t.Run == TestCaptureLimitsAsync
+                || t.Run == TestExportPersistenceRetryAsync || t.Run == TestExportStopResultAsync).ToArray();
+
+        if (args.Contains("--transport"))
+            tests = tests.Where(t => t.Run == TestDependencyInjectionAsync
+                || t.Run == TestMonitorSerializationAsync || t.Run == TestLargeMessagesAsync
+                || t.Run == TestConcurrentPipesAsync || t.Run == TestCancellationMessageAsync).ToArray();
 
         int failures = 0;
         foreach ((string name, Func<Task> run) in tests)
@@ -59,7 +68,7 @@ internal static partial class Program
             }
         }
 
-        if (args.Length > 0 && !args.Contains("--game-data-export"))
+        if (args.Length > 0 && !args.Contains("--game-data-export") && !args.Contains("--transport"))
         {
             try
             {

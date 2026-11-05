@@ -23,6 +23,8 @@ public sealed class SessionKeyLoader : IDisposable
     private const int ProtoKeyResponseMsgId = 112;
 
     private RSA? _privateKey;
+    private byte[]? _lastKeyBlob;
+    internal int Generation { get; private set; }
 
     /// <summary>是否已载入私钥。</summary>
     public bool HasPrivateKey => _privateKey is not null;
@@ -66,9 +68,6 @@ public sealed class SessionKeyLoader : IDisposable
     /// </summary>
     public bool TryResolve(GatewayFrame frame)
     {
-        if (SessionKey is not null)
-            return true;
-
         if (frame.MsgId != ProtoKeyResponseMsgId)
             return false;
 
@@ -81,6 +80,10 @@ public sealed class SessionKeyLoader : IDisposable
         var blob = ExtractKeyBlob(frame.Payload);
         if (blob is null || blob.Length != ExpectedBlobLength)
             return false;
+
+        // 相同 112 重传不能重置正在收集的快照。
+        if (SessionKey is not null && _lastKeyBlob is not null && blob.AsSpan().SequenceEqual(_lastKeyBlob))
+            return true;
 
         byte[]? key;
         try
@@ -96,7 +99,11 @@ public sealed class SessionKeyLoader : IDisposable
         if (!FrameCipher.IsValidSessionKey(key))
             return false;
 
+        if (SessionKey is not null)
+            CryptographicOperations.ZeroMemory(SessionKey);
         SessionKey = key;
+        _lastKeyBlob = blob;
+        Generation++;
         return true;
     }
 
@@ -127,5 +134,6 @@ public sealed class SessionKeyLoader : IDisposable
             CryptographicOperations.ZeroMemory(SessionKey);
 
         SessionKey = null;
+        _lastKeyBlob = null;
     }
 }

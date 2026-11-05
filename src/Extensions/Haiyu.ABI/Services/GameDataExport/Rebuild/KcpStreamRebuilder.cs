@@ -28,6 +28,30 @@ public sealed class KcpStreamRebuilder
     private readonly object _gate = new();
     private long _consumedBytes;
     private uint _nextSn;
+    private long _bufferedBytes;
+    private long? _gapSince;
+    private uint? _gapSn;
+    private readonly int _maxBufferedBytes;
+    private readonly TimeSpan _gapTimeout;
+    private readonly TimeProvider _clock;
+
+    public KcpStreamRebuilder() : this(32 * 1024 * 1024, TimeSpan.FromSeconds(30), TimeProvider.System) { }
+
+    internal KcpStreamRebuilder(int maxBufferedBytes, TimeSpan gapTimeout, TimeProvider clock)
+    {
+        _maxBufferedBytes = maxBufferedBytes;
+        _gapTimeout = gapTimeout;
+        _clock = clock;
+    }
+
+    public void ValidatePending()
+    {
+        lock (_gate)
+        {
+            if (_gapSince is { } start && _clock.GetElapsedTime(start) >= _gapTimeout)
+                throw new InvalidDataException("KCP 缺失段等待超时，导出已停止。请重新登录并重新开始导出。");
+        }
+    }
 
     /// <summary>已收到的不同 sn 数量。</summary>
     public int SegmentCount
@@ -70,7 +94,10 @@ public sealed class KcpStreamRebuilder
 
             // ★ 长存拷贝：解析输入是租借缓冲的切片，流必须拥有独立内存。
             //   （ACK/WASK/WINS 与重复段已在此前排除，零分配。）
+            if (_segments.Count >= 32768 || _bufferedBytes + segment.Payload.Length > _maxBufferedBytes)
+                throw new InvalidDataException("KCP 待解析缓冲超过上限，导出已停止。请重新开始导出。");
             _segments[segment.Sn] = segment.Payload.ToArray();
+            _bufferedBytes += segment.Payload.Length;
         }
     }
 
@@ -202,6 +229,7 @@ public sealed class KcpStreamRebuilder
             }
 
             _consumedBytes -= droppedBytes;
+            _bufferedBytes -= droppedBytes;
         }
     }
 
@@ -212,6 +240,9 @@ public sealed class KcpStreamRebuilder
             _segments.Clear();
             _consumedBytes = 0;
             _nextSn = 0;
+            _bufferedBytes = 0;
+            _gapSince = null;
+            _gapSn = null;
         }
     }
 
@@ -225,6 +256,18 @@ public sealed class KcpStreamRebuilder
             result.Add(new(sn, payload));
             sn = unchecked(sn + 1);
         }
+        if (_segments.Count > result.Count)
+        {
+            if (_gapSn != sn)
+                _gapSince = _clock.GetTimestamp();
+            _gapSn = sn;
+        }
+        else
+        {
+            _gapSince = null;
+            _gapSn = null;
+        }
+        ValidatePending();
         return result.ToArray();
     }
 

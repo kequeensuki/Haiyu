@@ -54,7 +54,9 @@ public enum GameDataExportStage
 public sealed partial record GameDataExportProgress(
     [property: JsonPropertyName("stage")] GameDataExportStage Stage,
     [property: JsonPropertyName("percentage")] int Percentage,
-    [property: JsonPropertyName("message")] string Message
+    [property: JsonPropertyName("message")] string Message,
+    [property: JsonPropertyName("captureReady")] bool CaptureReady = false,
+    [property: JsonPropertyName("hasDataUpdate")] bool HasDataUpdate = false
 );
 
 #endregion

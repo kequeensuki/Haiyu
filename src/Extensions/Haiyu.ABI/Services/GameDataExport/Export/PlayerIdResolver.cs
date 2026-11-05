@@ -90,7 +90,9 @@ public sealed class PlayerIdResolver
         Current = Phase.WaitingId;
         _keyResolvedTick = Environment.TickCount64;
         _pendingPayload = null;
-        // PlayerId 保留旧值：新的 id 解析成功前，落盘目录暂用旧值并提示切换中
+        _parseFailures = 0;
+        FailureReason = null;
+        // PlayerId 保留旧值：新的 id 解析成功前，仅供历史展示，新数据必须等 Current=Resolved 才能落盘
     }
 
     /// <summary>
@@ -118,8 +120,8 @@ public sealed class PlayerIdResolver
     /// <returns>进入 <see cref="Phase.Failed"/> 时返回 false（调用方终止会话）。</returns>
     public bool TryFeed(GatewayFrame frame)
     {
-        if (Current is Phase.Resolved or Phase.Failed)
-            return Current == Phase.Resolved;
+        if (Current == Phase.Failed)
+            return false;
 
         if (frame.MsgId != MsgIdFilter.BasicInfoNotify)
             return true;
@@ -139,7 +141,7 @@ public sealed class PlayerIdResolver
             return true; // 再等一条 BasicInfoNotify（服务器会随状态变更重发）
         }
 
-        if (playerId == 0)
+        if (playerId <= 0)
         {
             // int32 默认值 = 非法 playerId（proto3 未序列化该字段或数据异常）
             _parseFailures++;

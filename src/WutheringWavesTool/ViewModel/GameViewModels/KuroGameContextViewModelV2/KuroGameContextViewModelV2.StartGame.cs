@@ -112,8 +112,7 @@ partial class KuroGameContextViewModelV2
                         result.Success ? Symbol.Accept : Symbol.Clear);
                 };
 
-                // 空转探测（App 生命周期级；取消令牌随 App 关停）
-                _ = launcher.RunIdleWatcherAsync(this.CTS.Token);
+                // 空转计时由 Launcher 按会话持有，不依赖游戏页面的 CTS。
             }
 
             var ready = await launcher.StartSessionForAutoLaunchAsync();

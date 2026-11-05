@@ -16,6 +16,7 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
     internal Dictionary<ushort, List<GameValidTimeItem>> ValidTimeItems { get; } = new();
     internal int DecodedFrames { get; private set; }
     internal int Version { get; private set; }
+    internal string? Diagnostic { get; private set; }
     internal int ParsedCategories => NormalItems.Count + Weapons.Count + Phantoms.Count + ValidTimeItems.Count;
     internal bool Ready => PlayerId.Current == PlayerIdResolver.Phase.Resolved
         && ParsedCategories == MsgIdFilter.GetTargetMsgIds(scope).Length && DecodedFrames > 0;
@@ -38,8 +39,15 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
             {
                 if (frame.MsgId == MsgIdFilter.ProtoKeyResponse)
                 {
-                    if (keyLoader.TryResolve(frame))
-                        PlayerId.NotifyKeyResolved();
+                    var generation = keyLoader.Generation;
+                    if (!keyLoader.TryResolve(frame))
+                        Diagnostic = "新会话密钥解析失败，保留之前的密钥和已导出文件。";
+                    else if (keyLoader.Generation != generation)
+                    {
+                        ClearSnapshots();
+                        PlayerId.NotifyRelogin();
+                        Diagnostic = "已取得新会话密钥，等待玩家身份及完整背包。";
+                    }
                     continue;
                 }
                 if (keyLoader.SessionKey is null)
@@ -49,8 +57,16 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
                 if (frame.MsgId == MsgIdFilter.BasicInfoNotify)
                 {
                     // GatewayFrame.Payload 是密文，状态机只接收解密/解压后的 protobuf。
+                    var previousId = PlayerId.PlayerId;
+                    var previouslyResolved = PlayerId.Current == PlayerIdResolver.Phase.Resolved;
                     if (!PlayerId.TryFeed(frame with { Payload = plain }))
                         throw new InvalidDataException(PlayerId.FailureReason);
+                    if (PlayerId.Current == PlayerIdResolver.Phase.Resolved && previousId != PlayerId.PlayerId)
+                    {
+                        if (previousId > 0 && previouslyResolved)
+                            ClearSnapshots();
+                        Diagnostic = $"已切换至玩家 {PlayerId.PlayerId}，等待完整背包。";
+                    }
                 }
                 if (!MsgIdFilter.IsTarget(frame.MsgId, scope))
                     continue;
@@ -76,6 +92,21 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
                 break; // 半帧：保留在流中，下次补齐后再消费。
         }
         return offset;
+    }
+
+    internal string? TakeDiagnostic()
+    {
+        var value = Diagnostic;
+        Diagnostic = null;
+        return value;
+    }
+
+    private void ClearSnapshots()
+    {
+        NormalItems.Clear();
+        Weapons.Clear();
+        Phantoms.Clear();
+        ValidTimeItems.Clear();
     }
 
     private static bool Store<T>(Dictionary<ushort, List<T>> map, ushort id, List<T>? items)

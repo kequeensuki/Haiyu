@@ -52,6 +52,19 @@ public sealed class GameDataExportService
     /// 作为字段而非局部变量，是因为抓包循环里需要增量解析（单消费者解析链）。
     /// </summary>
     private readonly SessionKeyLoader _keyLoader = new();
+    private readonly Func<IUdpCapture> _createCapture;
+    private readonly Action<SessionKeyLoader> _loadKey;
+    private readonly Func<GameDataExportResult, DateTimeOffset, string?> _write;
+
+    public GameDataExportService() : this(() => new NpcapUdpCapture(), LoadPrivateKey, InventoryJsonWriter.TryWrite) { }
+
+    internal GameDataExportService(Func<IUdpCapture> createCapture, Action<SessionKeyLoader> loadKey,
+        Func<GameDataExportResult, DateTimeOffset, string?> write)
+    {
+        _createCapture = createCapture;
+        _loadKey = loadKey;
+        _write = write;
+    }
 
     public PrivilegedServiceContract<
         GameDataExportRequest,
@@ -66,13 +79,13 @@ public sealed class GameDataExportService
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(progress);
-        using var capture = new NpcapUdpCapture();
+        using var capture = _createCapture();
         var sessionStart = DateTimeOffset.Now;
         var captured = 0;
         var updates = 0;
         var writtenVersions = new Dictionary<uint, int>();
-        var lastWrite = Environment.TickCount64;
-        var lastReport = lastWrite;
+        var lastAttempts = new Dictionary<uint, long>();
+        var lastReport = Environment.TickCount64;
         var connections = new Dictionary<uint, KcpConnection>();
         var streams = new Dictionary<uint, KcpStreamRebuilder>();
         var states = new Dictionary<uint, InventoryCaptureState>();
@@ -80,11 +93,14 @@ public sealed class GameDataExportService
         try
         {
             Report(progress, GameDataExportStage.Capturing, 0, "正在准备网卡");
-            LoadPrivateKey(_keyLoader);
+            _loadKey(_keyLoader);
             capture.Start();
-            Report(progress, GameDataExportStage.Capturing, 5, "正在等待游戏连接");
+            Report(progress, GameDataExportStage.Capturing, 5, "正在等待游戏连接", captureReady: true);
             while (!cancellationToken.IsCancellationRequested)
             {
+                foreach (var stream in streams.Values)
+                    stream.ValidatePending();
+                var decodedBefore = states.Values.Sum(s => s.DecodedFrames);
                 var packet = capture.TryRead();
                 if (packet is not null)
                 {
@@ -132,9 +148,14 @@ public sealed class GameDataExportService
                     await Task.Delay(5, CancellationToken.None).ConfigureAwait(false);
                 }
 
+                if (states.Values.Sum(s => s.DecodedFrames) > decodedBefore)
+                    Report(progress, GameDataExportStage.Capturing, 50, "已解析新的背包数据", hasDataUpdate: true);
+
                 foreach (var pair in states)
                 {
                     var state = pair.Value;
+                    if (state.TakeDiagnostic() is { } diagnostic)
+                        Report(progress, GameDataExportStage.Capturing, 20, diagnostic);
                     if (!state.PlayerId.OnTick())
                         throw new InvalidOperationException(state.PlayerId.FailureReason);
                     if (state.PlayerId.Current == PlayerIdResolver.Phase.Failed)
@@ -144,15 +165,19 @@ public sealed class GameDataExportService
                     if (writtenVersions.GetValueOrDefault(pair.Key) == state.Version)
                         continue;
                     var now = Environment.TickCount64;
-                    if (lastResult is not null && now - lastWrite < 1000)
+                    if (lastAttempts.TryGetValue(pair.Key, out var lastAttempt) && now - lastAttempt < 1000)
                         continue;
+                    lastAttempts[pair.Key] = now;
                     // Both protobuf snapshots and playerId are ready before any file is written.
                     lastResult = await BuildAndWriteAsync(
                         state.NormalItems, state.Weapons, state.Phantoms, state.ValidTimeItems,
-                        captured, state.DecodedFrames, ++updates, sessionStart, progress,
-                        firstExport: lastResult is null, playerId: state.PlayerId.PlayerId, sessionKey: state.SessionKey!).ConfigureAwait(false);
-                    writtenVersions[pair.Key] = state.Version;
-                    lastWrite = now;
+                        captured, state.DecodedFrames, updates + 1, sessionStart, progress,
+                        firstExport: updates == 0, playerId: state.PlayerId.PlayerId, sessionKey: state.SessionKey!).ConfigureAwait(false);
+                    if (lastResult.OutputJsonPath is not null)
+                    {
+                        writtenVersions[pair.Key] = state.Version;
+                        updates++;
+                    }
                 }
                 if (Environment.TickCount64 - lastReport >= 2000 && lastResult is null)
                 {
@@ -160,7 +185,7 @@ public sealed class GameDataExportService
                     var best = states.Values.OrderByDescending(s => s.ParsedCategories).FirstOrDefault();
                     var message = !states.Values.Any(s => s.SessionKey is not null)
                         ? $"等待游戏登录与会话密钥（UDP {captured} 帧）"
-                        : best?.ParsedCategories == 4 && best.PlayerId.PlayerId <= 0
+                        : best?.ParsedCategories == 4 && best.PlayerId.Current != PlayerIdResolver.Phase.Resolved
                             ? "背包数据已解析（4/4），等待玩家身份信息"
                             : $"已取得会话密钥，解析背包数据（{best?.ParsedCategories ?? 0}/4）";
                     Report(progress, GameDataExportStage.Capturing, 10 + (best?.ParsedCategories ?? 0) * 10, message);
@@ -170,11 +195,15 @@ public sealed class GameDataExportService
             {
                 var state = pair.Value;
                 if (state.Ready && writtenVersions.GetValueOrDefault(pair.Key) != state.Version)
+                {
                     lastResult = await BuildAndWriteAsync(
                         state.NormalItems, state.Weapons, state.Phantoms, state.ValidTimeItems,
-                        captured, state.DecodedFrames, ++updates, sessionStart, progress,
-                        firstExport: lastResult is null, playerId: state.PlayerId.PlayerId,
+                        captured, state.DecodedFrames, updates + 1, sessionStart, progress,
+                        firstExport: updates == 0, playerId: state.PlayerId.PlayerId,
                         sessionKey: state.SessionKey!).ConfigureAwait(false);
+                    if (lastResult.OutputJsonPath is not null)
+                        updates++;
+                }
             }
             return lastResult ?? Failure("监控已停止，尚未取得完整背包及玩家身份信息，未生成导出文件。", captured, states.Values.Sum(s => s.DecodedFrames), null);
         }
@@ -231,13 +260,16 @@ public sealed class GameDataExportService
             playerId, updateCount
         );
 
-        var path = InventoryJsonWriter.TryWrite(result, sessionStart);
+        var path = _write(result, sessionStart);
         if (path is not null)
             result = result with { OutputJsonPath = path };
 
-        Report(progress, GameDataExportStage.Completed, 100, path is null
-            ? (firstExport ? "导出完成（但 JSON 落盘失败）" : $"第 {updateCount} 次更新（JSON 落盘失败）")
-            : (firstExport ? $"导出完成：{path}" : $"数据已更新：{path}"));
+        if (path is null)
+            result = result with { Success = false, Message = "JSON 写入失败，保留上次文件，稍后重试。" };
+        Report(progress, path is null ? GameDataExportStage.Exporting : GameDataExportStage.Completed,
+            path is null ? 85 : 100, path is null
+                ? result.Message
+                : (firstExport ? $"导出完成：{path}" : $"数据已更新：{path}"));
 
         await Task.CompletedTask.ConfigureAwait(false);
         return result;
@@ -278,6 +310,8 @@ public sealed class GameDataExportService
         IProgress<GameDataExportProgress> progress,
         GameDataExportStage stage,
         int percentage,
-        string message
-    ) => progress.Report(new GameDataExportProgress(stage, percentage, message));
+        string message,
+        bool captureReady = false,
+        bool hasDataUpdate = false
+    ) => progress.Report(new GameDataExportProgress(stage, percentage, message, captureReady, hasDataUpdate));
 }

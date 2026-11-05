@@ -72,26 +72,36 @@ public static class InventoryJsonWriter
     /// </remarks>
     public static string? TryWrite(GameDataExportResult result, DateTimeOffset timestamp)
     {
-        var path = result.PlayerId > 0
-            ? GameDataExportPaths.BuildSessionPath(result.PlayerId, timestamp)
-            : GameDataExportPaths.BuildJsonPath(timestamp);
-        var document = BuildDocument(result, timestamp);
-        return WriteAtomicTo(path, document);
+        try
+        {
+            var path = result.PlayerId > 0
+                ? GameDataExportPaths.BuildSessionPath(result.PlayerId, timestamp)
+                : GameDataExportPaths.BuildJsonPath(timestamp);
+            using var document = BuildDocument(result, timestamp);
+            return WriteAtomicTo(path, document);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
-    /// <summary>internal 测试钩子：以指定目录为根执行同样的路径规则与原子写。</summary>
-    internal static string? TryWriteToRoot(
-        string rootDirectory,
-        GameDataExportResult result,
-        DateTimeOffset timestamp)
+    /// <summary>测试入口：沿用同样的路径及错误处理。</summary>
+    internal static string? TryWriteToRoot(string rootDirectory, GameDataExportResult result, DateTimeOffset timestamp)
     {
-        var path = result.PlayerId > 0
-            ? Path.Combine(rootDirectory, result.PlayerId.ToString(),
-                $"game-data-{timestamp:yyyyMMdd-HHmmss}.json")
-            : Path.Combine(rootDirectory, $"game-data-{timestamp:yyyyMMdd-HHmmss}.json");
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var document = BuildDocument(result, timestamp);
-        return WriteAtomicTo(path, document);
+        try
+        {
+            var path = result.PlayerId > 0
+                ? Path.Combine(rootDirectory, result.PlayerId.ToString(), $"game-data-{timestamp:yyyyMMdd-HHmmss}.json")
+                : Path.Combine(rootDirectory, $"game-data-{timestamp:yyyyMMdd-HHmmss}.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            using var document = BuildDocument(result, timestamp);
+            return WriteAtomicTo(path, document);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     /// <summary>原子写：tmp → Replace/Move。失败保留旧文件，返回 null。</summary>

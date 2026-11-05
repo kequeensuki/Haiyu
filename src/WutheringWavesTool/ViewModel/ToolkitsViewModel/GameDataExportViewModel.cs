@@ -17,29 +17,54 @@ namespace Haiyu.ViewModel.ToolkitsViewModel;
 public sealed partial class GameDataExportViewModel : ViewModelBase
 {
     private readonly Services.GameDataExportLauncher _launcher;
-    private readonly IProgress<(string Message, int Percentage)> _progress;
+    private readonly IProgress<bool> _stateUpdates;
 
     public GameDataExportViewModel(IViewFactorys viewFactorys)
     {
         ViewFactorys = viewFactorys;
         _launcher = Instance.Host.Services.GetRequiredService<Services.GameDataExportLauncher>();
-        // 在 UI 线程创建，Launcher 的线程池回调经此调度回 UI。
-        _progress = new Progress<(string Message, int Percentage)>(p =>
+        // 窗口仅观察应用会话，不持有 await session 的长期 continuation。
+        _stateUpdates = new Progress<bool>(_ =>
         {
-            if (IsDisposed)
-                return;
-            ProgressMessage = p.Message;
-            ProgressValue = p.Percentage;
+            if (!IsDisposed)
+                SynchronizeSession();
         });
         _launcher.ProgressChanged += OnProgressChanged;
+        _launcher.StateChanged += OnStateChanged;
+        SynchronizeSession();
     }
 
-    private void OnProgressChanged(string message, int percentage) =>
-        _progress.Report((message, percentage));
+    private void OnProgressChanged(string message, int percentage) => _stateUpdates.Report(true);
+    private void OnStateChanged() => _stateUpdates.Report(true);
+
+    private void SynchronizeSession()
+    {
+        IsExporting = _launcher.IsSessionActive;
+        if (_launcher.LastProgress is { } progress)
+        {
+            ProgressMessage = progress.Message;
+            ProgressValue = progress.Percentage;
+        }
+        else if (IsExporting)
+        {
+            ProgressMessage = LanguageService.GetString("Toolkit_GameDataExportPreparing");
+            ProgressValue = 0;
+        }
+        var result = _launcher.LastResult;
+        HasResult = !IsExporting && result is not null;
+        ResultMessage = HasResult
+            ? (result!.Success
+                ? string.Format(LanguageService.GetString("Toolkit_GameDataExportDone"),
+                    result.Inventory?.NormalItems.Count ?? 0, result.Inventory?.Weapons.Count ?? 0,
+                    result.Inventory?.Phantoms.Count ?? 0, result.Inventory?.ValidTimeItems.Count ?? 0)
+                : result.Message) + (result.OutputJsonPath is null ? string.Empty : $"\n{result.OutputJsonPath}")
+            : string.Empty;
+    }
 
     protected override void OnDisposing()
     {
         _launcher.ProgressChanged -= OnProgressChanged;
+        _launcher.StateChanged -= OnStateChanged;
         base.OnDisposing();
     }
 
@@ -65,69 +90,40 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
     /// 若自动启动已建立会话，进入监控显示态而非重复发起。
     /// </summary>
     [RelayCommand]
-    private async Task StartExportAsync()
+    private void StartExport()
     {
-        if (IsExporting)
-        {
+        if (IsDisposed)
             return;
-        }
-
-        IsExporting = true;
-        HasResult = false;
-        ProgressValue = 0;
-        ResultMessage = string.Empty;
-        ProgressMessage = LanguageService.GetString("Toolkit_GameDataExportPreparing");
-
         try
         {
-            var launcher = Instance.Host.Services.GetRequiredService<Services.GameDataExportLauncher>();
-
-            // 幂等：已有会话（自动启动）直接进入监控显示，不重复发起
-            launcher.TryStart(out var session);
-            if (launcher.LastProgress is { } latest)
-            {
-                ProgressMessage = latest.Message;
-                ProgressValue = latest.Percentage;
-            }
-
-            // 会话完成（v2 语义：收尾时才返回最终结果）
-            var export = await session;
-
-            HasResult = true;
-            ResultMessage = export.Success
-                ? string.Format(
-                    LanguageService.GetString("Toolkit_GameDataExportDone"),
-                    export.Inventory?.NormalItems.Count ?? 0,
-                    export.Inventory?.Weapons.Count ?? 0,
-                    export.Inventory?.Phantoms.Count ?? 0,
-                    export.Inventory?.ValidTimeItems.Count ?? 0
-                ) + (export.OutputJsonPath is null
-                    ? string.Empty
-                    : $"\n{export.OutputJsonPath}")
-                : export.Message;
-        }
-        catch (OperationCanceledException)
-        {
-            HasResult = true;
-            ResultMessage = LanguageService.GetString("Toolkit_GameDataExportStopped");
+            _launcher.TryStart(out _);
+            SynchronizeSession();
         }
         catch (Exception ex)
         {
             HasResult = true;
             ResultMessage = ex.Message;
         }
-        finally
-        {
-            IsExporting = false;
-        }
     }
 
-    /// <summary>停止导出（宿主收尾落盘返回最新快照；会话由 Launcher 管理）。</summary>
+    /// <summary>只等待窗口生命周期内的停止操作；关闭窗口不取消后台监控。</summary>
     [RelayCommand]
     private async Task StopExportAsync()
     {
-        var launcher = Instance.Host.Services.GetRequiredService<Services.GameDataExportLauncher>();
-        await launcher.StopAsync();
+        try
+        {
+            var result = await _launcher.StopAsync().WaitAsync(LifetimeToken);
+            if (!IsDisposed)
+            {
+                SynchronizeSession();
+                if (_launcher.IsSessionActive && result is { Success: false })
+                {
+                    HasResult = true;
+                    ResultMessage = result.Message;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (IsDisposed) { }
     }
 
     /// <summary>打开导出目录（Windows 资源管理器）。</summary>
@@ -152,8 +148,4 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
         }
     }
 
-    private async Task ShowTipAsync(string message, Symbol symbol)
-    {
-        await AppContext.WindowManager.Shell.TipShow.ShowMessageAsync(message, symbol);
-    }
 }

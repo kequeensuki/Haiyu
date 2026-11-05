@@ -132,6 +132,57 @@ internal static partial class Program
         }
         catch (InvalidDataException) { }
         Equal(5, state.DecodedFrames);
+        // 保存旧玩家快照，后续切号写入不得覆盖它。
+        var oldSnapshot = new GameDataExportResult(true, "ok",
+            new GameInventoryData(state.NormalItems.Values.SelectMany(x => x).ToList(), [], [], []),
+            null, 10, state.DecodedFrames, null, state.PlayerId.PlayerId, 1);
+        // 新的 112 换钥并隔离旧玩家快照；相同 112 重传不应再次清空快照。
+        key = RandomNumberGenerator.GetBytes(32);
+        var newKeyFrame = Frame(112, new ProtoKeyResponse
+        {
+            Key = ByteString.CopyFrom(rsa.Encrypt(key, RSAEncryptionPadding.Pkcs1))
+        }.ToByteArray());
+        Feed(newKeyFrame);
+        Equal(true, loader.SessionKey!.SequenceEqual(key));
+        Equal(false, state.Ready);
+        Equal(0, state.ParsedCategories);
+        var switchedItems = new NormalItemResponse();
+        switchedItems.NormalItemList.Add(new NormalItem { Id = 777, Count = 12 });
+        Feed(Frame(MsgIdFilter.NormalItemResponse, switchedItems.ToByteArray()));
+        Feed(Frame(MsgIdFilter.BasicInfoNotify, new BasicInfoNotify { Id = 654321 }.ToByteArray()));
+        Equal(654321, state.PlayerId.PlayerId);
+        Equal(1, state.NormalItems[MsgIdFilter.NormalItemResponse].Count);
+        Feed(Frame(MsgIdFilter.WeaponItemResponse, new WeaponItemResponse().ToByteArray()));
+        Feed(Frame(MsgIdFilter.PhantomItemResponse, new PhantomItemResponse().ToByteArray()));
+        Feed(Frame(MsgIdFilter.ValidTimeItemResponse, new ValidTimeItemResponse().ToByteArray()));
+        Equal(true, state.Ready);
+        var version = state.Version;
+        Feed(newKeyFrame);
+        Equal(true, state.Ready);
+        Equal(version, state.Version);
+        // 损坏的协商不能替换有效密钥或清除已解析快照。
+        Feed(Frame(112, new ProtoKeyResponse { Key = ByteString.CopyFrom(new byte[256]) }.ToByteArray()));
+        Equal(true, loader.SessionKey!.SequenceEqual(key));
+        Equal(true, state.Ready);
+        var switchRoot = Path.Combine(Path.GetTempPath(), "haiyu-switch-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var timestamp = DateTimeOffset.Now;
+            var oldPath = InventoryJsonWriter.TryWriteToRoot(switchRoot, oldSnapshot, timestamp)!;
+            var newSnapshot = oldSnapshot with
+            {
+                PlayerId = state.PlayerId.PlayerId,
+                Inventory = new GameInventoryData(state.NormalItems.Values.SelectMany(x => x).ToList(), [], [], [])
+            };
+            var newPath = InventoryJsonWriter.TryWriteToRoot(switchRoot, newSnapshot, timestamp)!;
+            Equal("123456", Path.GetFileName(Path.GetDirectoryName(oldPath)));
+            Equal("654321", Path.GetFileName(Path.GetDirectoryName(newPath)));
+            using var oldJson = JsonDocument.Parse(File.ReadAllText(oldPath));
+            using var newJson = JsonDocument.Parse(File.ReadAllText(newPath));
+            Equal(99, oldJson.RootElement.GetProperty("inventory").GetProperty("normalItems").GetProperty("items")[0].GetProperty("id").GetInt32());
+            Equal(777, newJson.RootElement.GetProperty("inventory").GetProperty("normalItems").GetProperty("items")[0].GetProperty("id").GetInt32());
+        }
+        finally { if (Directory.Exists(switchRoot)) Directory.Delete(switchRoot, true); }
         return Task.CompletedTask;
     }
 }
