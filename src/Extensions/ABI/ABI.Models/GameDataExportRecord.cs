@@ -73,7 +73,10 @@ public sealed partial record GameDataExportResult(
     [property: JsonPropertyName("outputJsonPath")] string? OutputJsonPath,
     [property: JsonPropertyName("capturedFrames")] int CapturedFrames,
     [property: JsonPropertyName("decodedFrames")] int DecodedFrames,
-    [property: JsonPropertyName("sessionKeyHex")] string? SessionKeyHex
+    [property: JsonPropertyName("sessionKeyHex")] string? SessionKeyHex,
+    // ── v2 持续监控新增（尾部追加，两端同包部署无兼容负担）──
+    [property: JsonPropertyName("playerId")] int PlayerId = 0,
+    [property: JsonPropertyName("updateCount")] int UpdateCount = 0
 );
 
 #endregion

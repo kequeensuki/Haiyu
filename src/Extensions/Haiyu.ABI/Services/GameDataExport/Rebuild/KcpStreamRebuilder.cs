@@ -112,6 +112,60 @@ public sealed class KcpStreamRebuilder
         }
     }
 
+    /// <summary>
+    /// 按 sn 升序拼出「指定水位之后」的字节视图（外部水位驱动版，v2 监控循环用）。
+    /// 与 <see cref="BuildIncremental"/>（内部水位）不同：水位由调用方持有
+    /// （PumpState.Watermarks），解析完成由调用方推进——流本身保持无状态水位。
+    /// 没有新数据返回空数组。
+    /// </summary>
+    public byte[] BuildViewFrom(long watermark)
+    {
+        lock (_gate)
+        {
+            var ordered = _segments.OrderBy(pair => pair.Key).ToArray();
+
+            long cursor = 0;
+            var copyFrom = -1;
+            var trimBytes = 0L;
+            for (var i = 0; i < ordered.Length; i++)
+            {
+                var start = cursor;
+                var end = cursor + ordered[i].Value.Length;
+                cursor = end;
+
+                if (end <= watermark)
+                    continue;
+
+                copyFrom = i;
+                trimBytes = Math.Max(0, watermark - start);
+                break;
+            }
+
+            if (copyFrom < 0)
+                return [];
+
+            var selected = ordered[copyFrom..];
+            var total = selected.Sum(pair => (long)pair.Value.Length) - trimBytes;
+            if (total <= 0)
+                return [];
+
+            var buffer = new byte[total];
+            var offset = 0;
+            for (var i = 0; i < selected.Length; i++)
+            {
+                var payload = selected[i].Value;
+                var skip = i == 0 ? (int)trimBytes : 0;
+                if (skip >= payload.Length)
+                    continue;
+
+                Buffer.BlockCopy(payload, skip, buffer, offset, payload.Length - skip);
+                offset += payload.Length - skip;
+            }
+
+            return buffer;
+        }
+    }
+
     /// <summary>把水位推进 <paramref name="bytes"/> 字节。</summary>
     public void AdvanceConsumed(long bytes)
     {
