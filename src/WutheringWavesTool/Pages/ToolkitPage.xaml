@@ -155,29 +155,35 @@
             </cui:SettingsCard>
             <cui:SettingsCard
                 Description="{x:Bind helper:LanguageService.GetString('Toolkit_GameDataExportDescription')}"
-                Header="{x:Bind helper:LanguageService.GetString('Toolkit_GameDataExportHeader')}"
-                HorizontalContentAlignment="Right">
+                Header="{x:Bind helper:LanguageService.GetString('Toolkit_GameDataExportHeader')}">
                 <cui:SettingsCard.HeaderIcon>
                     <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE8B7;" />
                 </cui:SettingsCard.HeaderIcon>
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <CheckBox
-                        VerticalAlignment="Center"
-                        IsChecked="{x:Bind ViewModel.GameDataExportEnable, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                        IsThreeState="False" />
-                    <Button
-                        Padding="12,8"
-                        Command="{x:Bind ViewModel.ShowGameDataExportCommand}"
-                        Style="{ThemeResource TitleBarButtonStyle}">
-                        <StackPanel Orientation="Horizontal" Spacing="4">
-                            <FontIcon
-                                FontFamily="Segoe Fluent Icons"
-                                FontSize="13"
-                                Glyph="&#xE8A7;" />
-                            <TextBlock FontSize="13" Text="{x:Bind helper:LanguageService.GetString('Display_Open')}" />
-                        </StackPanel>
-                    </Button>
-                </StackPanel>
+                <!-- SettingsCard 模板把 ContentPresenter 硬绑 Stretch/Left（对齐属性不生效），
+                     用铺满 Grid 承载、内部元素 Right 对齐实现整体靠右 -->
+                <Grid>
+                    <StackPanel
+                        HorizontalAlignment="Right"
+                        Orientation="Horizontal"
+                        Spacing="8">
+                        <CheckBox
+                            VerticalAlignment="Center"
+                            IsChecked="{x:Bind ViewModel.GameDataExportEnable, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                            IsThreeState="False" />
+                        <Button
+                            Padding="12,8"
+                            Command="{x:Bind ViewModel.ShowGameDataExportCommand}"
+                            Style="{ThemeResource TitleBarButtonStyle}">
+                            <StackPanel Orientation="Horizontal" Spacing="4">
+                                <FontIcon
+                                    FontFamily="Segoe Fluent Icons"
+                                    FontSize="13"
+                                    Glyph="&#xE8A7;" />
+                                <TextBlock FontSize="13" Text="{x:Bind helper:LanguageService.GetString('Display_Open')}" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Grid>
             </cui:SettingsCard>
             <cui:SettingsCard Description="{x:Bind helper:LanguageService.GetString('Toolkit_LogDecryptDescription')}" Header="{x:Bind helper:LanguageService.GetString('Toolkit_LogDecryptHeader')}">
                 <cui:SettingsCard.HeaderIcon>
