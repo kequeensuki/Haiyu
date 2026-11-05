@@ -266,6 +266,7 @@ public static class InstanceBuilderExtensions
                         (s, o) => new WavesPlayerCardCacheServices(AppSettings.WavesRecordFolderV3)
                     )
                     .AddSingleton<ABIRuntimeService>()
+                    .AddSingleton<Haiyu.Services.GameDataExportLauncher>()
                     #endregion
                     #region Toolkit
                     .AddTransient<ToolkitPage>()
