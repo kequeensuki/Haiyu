@@ -83,7 +83,8 @@ public sealed class GameDataExportService
         var sessionStart = DateTimeOffset.Now;
         var captured = 0;
         var decodedTotal = 0;
-        var updates = 0;
+        // 次数属于玩家，不属于抓包连接；切网重连或切回同一账号时继续累计。
+        var updatesByPlayer = new Dictionary<int, int>();
         var writtenVersions = new Dictionary<uint, int>();
         var lastAttempts = new Dictionary<uint, long>();
         var lastReport = Environment.TickCount64;
@@ -266,14 +267,16 @@ public sealed class GameDataExportService
                         continue;
                     lastAttempts[pair.Key] = now;
                     // Both protobuf snapshots and playerId are ready before any file is written.
+                    var playerId = state.PlayerId.PlayerId;
+                    var updateCount = updatesByPlayer.GetValueOrDefault(playerId) + 1;
                     lastResult = await BuildAndWriteAsync(
                         state.NormalItems, state.Weapons, state.Phantoms, state.ValidTimeItems,
-                        captured, state.DecodedFrames, updates + 1, sessionStart, progress,
-                        firstExport: updates == 0, playerId: state.PlayerId.PlayerId, sessionKey: state.SessionKey!).ConfigureAwait(false);
+                        captured, state.DecodedFrames, updateCount, sessionStart, progress,
+                        firstExport: updateCount == 1, playerId: playerId, sessionKey: state.SessionKey!).ConfigureAwait(false);
                     if (lastResult.OutputJsonPath is not null)
                     {
                         writtenVersions[pair.Key] = state.Version;
-                        updates++;
+                        updatesByPlayer[playerId] = updateCount;
                     }
                 }
                 if (Environment.TickCount64 - lastReport >= 2000)
@@ -308,13 +311,15 @@ public sealed class GameDataExportService
                 var state = pair.Value;
                 if (state.Ready && writtenVersions.GetValueOrDefault(pair.Key) != state.Version)
                 {
+                    var playerId = state.PlayerId.PlayerId;
+                    var updateCount = updatesByPlayer.GetValueOrDefault(playerId) + 1;
                     lastResult = await BuildAndWriteAsync(
                         state.NormalItems, state.Weapons, state.Phantoms, state.ValidTimeItems,
-                        captured, state.DecodedFrames, updates + 1, sessionStart, progress,
-                        firstExport: updates == 0, playerId: state.PlayerId.PlayerId,
+                        captured, state.DecodedFrames, updateCount, sessionStart, progress,
+                        firstExport: updateCount == 1, playerId: playerId,
                         sessionKey: state.SessionKey!).ConfigureAwait(false);
                     if (lastResult.OutputJsonPath is not null)
-                        updates++;
+                        updatesByPlayer[playerId] = updateCount;
                 }
             }
             return lastResult ?? Failure("监控已停止，尚未取得完整背包及玩家身份信息，未生成导出文件。", captured, decodedTotal, null);

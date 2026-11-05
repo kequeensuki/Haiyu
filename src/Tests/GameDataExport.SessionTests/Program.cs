@@ -236,8 +236,8 @@ static Task WindowAsync()
         Check(vm.ProgressMessage.Contains("123/old.json") && vm.IsExporting && !vm.HasResult, "首次快照被当作会话结束");
         Report(new(GameDataExportStage.Capturing, 20, "等待新的玩家身份"));
         Check(vm.ProgressMessage == "等待新的玩家身份" && launcher.IsSessionActive, "回登录界面导致终止或旧状态滞留");
-        Report(new(GameDataExportStage.Monitoring, 100, "导出完成：old.json", PlayerId: 456, OutputJsonPath: "456/new.json", UpdateCount: 2));
-        Check(vm.ProgressMessage.Contains("456/new.json") && vm.ProgressMessage.Contains("2 次") && !vm.ProgressMessage.Contains("old.json"), "切号后 UI 没有使用最新快照路径");
+        Report(new(GameDataExportStage.Monitoring, 100, "导出完成：old.json", PlayerId: 456, OutputJsonPath: "456/new.json", UpdateCount: 1));
+        Check(vm.ProgressMessage.Contains("456/new.json") && vm.ProgressMessage.Contains("1 次") && !vm.ProgressMessage.Contains("old.json"), "切号后 UI 没有使用当前玩家的路径和次数");
         var weak = ClosedWindow(ui);
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
         Check(!weak.IsAlive, "关闭的窗口 VM 被会话长期保留");

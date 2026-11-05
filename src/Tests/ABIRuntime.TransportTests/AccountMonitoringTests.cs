@@ -13,6 +13,12 @@ internal static partial class Program
 {
     private static async Task TestAccountMonitoringAsync()
     {
+        foreach (var switchBack in new[] { false, true })
+            await VerifyAccountMonitoringAsync(switchBack);
+    }
+
+    private static async Task VerifyAccountMonitoringAsync(bool switchBack)
+    {
         using var rsa = RSA.Create(2048);
         var firstKey = RandomNumberGenerator.GetBytes(32);
         var secondKey = RandomNumberGenerator.GetBytes(32);
@@ -67,6 +73,7 @@ internal static partial class Program
                     writes++;
                     var path = InventoryJsonWriter.TryWriteToRoot(root, result, timestamp);
                     if (writes == 1) Login(2, 222222, secondKey);
+                    else if (writes == 2 && switchBack) Login(3, 111111, firstKey);
                     else
                     {
                         // 旧连接后台数据不能把当前账号状态切回去。
@@ -74,9 +81,12 @@ internal static partial class Program
                         var old = new byte[24 + frame.Length]; BinaryPrimitives.WriteUInt32LittleEndian(old, 1); old[4] = 81;
                         BinaryPrimitives.WriteUInt32LittleEndian(old.AsSpan(20), (uint)frame.Length); frame.CopyTo(old, 24);
                         packets.Enqueue(Packet(old));
-                        var lateNormal = new NormalItemResponse();
-                        lateNormal.NormalItemList.Add(new NormalItem { Id = 111111, Count = 999 });
-                        Raw(1, 22445, lateNormal.ToByteArray(), firstKey);
+                        if (!switchBack)
+                        {
+                            var lateNormal = new NormalItemResponse();
+                            lateNormal.NormalItemList.Add(new NormalItem { Id = 111111, Count = 999 });
+                            Raw(1, 22445, lateNormal.ToByteArray(), firstKey);
+                        }
                         timeout.CancelAfter(TimeSpan.FromMilliseconds(2400));
                     }
                     return path;
@@ -84,16 +94,19 @@ internal static partial class Program
             var result = await service.ExecuteAsync(new(GameDataExportScope.Inventory),
                 new InlineProgress<GameDataExportProgress>(reports.Add), timeout.Token);
             Equal(true, result.Success);
-            Equal(2, writes);
+            Equal(switchBack ? 3 : 2, writes);
             var acquired = reports.Single(p => p.SessionKeyAcquired);
             var wire = MemoryPack.MemoryPackSerializer.Serialize(acquired);
             Equal(true, MemoryPack.MemoryPackSerializer.Deserialize<GameDataExportProgress>(wire)!.SessionKeyAcquired);
             var monitoring = reports.Where(p => p.Stage == GameDataExportStage.Monitoring).ToArray();
             Equal(111111, monitoring[0].PlayerId);
-            Equal(222222, monitoring[^1].PlayerId);
-            Equal(2, monitoring[^1].UpdateCount);
+            Equal(switchBack ? 111111 : 222222, monitoring[^1].PlayerId);
+            Equal(switchBack ? 2 : 1, monitoring[^1].UpdateCount);
+            Equal(1, monitoring[0].UpdateCount);
+            Equal(true, monitoring.Where(p => p.PlayerId == 222222).All(p => p.UpdateCount == 1));
+            Equal(switchBack ? 2 : 1, result.UpdateCount);
             Equal(result.OutputJsonPath!, monitoring[^1].OutputJsonPath!);
-            Equal(true, monitoring.Count(p => p.PlayerId == 222222) >= 2); // 写入和后续心跳均更新。
+            Equal(true, monitoring.Count(p => p.PlayerId == result.PlayerId) >= 2); // 写入和后续心跳均更新。
             Equal(false, reports.Any(p => p.Stage == GameDataExportStage.Completed)); // 单次快照不是会话完成。
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
