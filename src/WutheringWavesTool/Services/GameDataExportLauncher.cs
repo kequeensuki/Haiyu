@@ -114,6 +114,33 @@ public sealed class GameDataExportLauncher : IDisposable
     }
 
     /// <summary>
+    /// 自动启动场景入口：发起会话并等待宿主进入「等待握手中/监控就绪」态
+    /// （进度消息出现即视为宿主就绪，超时 <see cref="HandshakeReadyTimeout"/> 放行不阻断游戏）。
+    /// 返回 false = 发起失败（ABI 未就绪等），调用方静默降级只提示不阻断。
+    /// </summary>
+    public async Task<bool> StartSessionForAutoLaunchAsync()
+    {
+        if (!TryStart(out var session))
+            return true; // 已有会话在跑：视为就绪
+
+        try
+        {
+            await session.WaitAsync(HandshakeReadyTimeout);
+            return true;
+        }
+        catch (TimeoutException)
+        {
+            return true; // 超时放行：会话仍在后台初始化，不阻断游戏启动
+        }
+        catch (Exception)
+        {
+            return false; // 会话快速失败（ABI 未就绪等）
+        }
+    }
+
+    private static readonly TimeSpan HandshakeReadyTimeout = TimeSpan.FromSeconds(15);
+
+    /// <summary>
     /// 启动空转探测循环（自动启动场景调用一次；手动窗口场景不需要——
     /// 用户在场可以自己停止）。
     ///
