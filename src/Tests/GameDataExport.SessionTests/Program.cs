@@ -7,6 +7,8 @@ using Haiyu.ViewModel.ToolkitsViewModel;
 
 var tests = new (string, Func<Task>)[]
 {
+    ("PEM 导入校验、持久化与读取兼容", KeyImportTests.BusinessAsync),
+    ("导入入口：取消、成功、失败及会话互斥", KeyImportTests.UiAsync),
     ("捕获就绪信号及提前失败", ReadyAsync),
     ("游戏退出事件与外部进程退出停止捕获", GameExitAsync),
     ("取消返回结果、通知一次、会话可重启", StopAsync),
@@ -223,7 +225,7 @@ static Task WindowAsync()
         Instance.Host = new TestHost(services);
         launcher.TryStart(out var task);
         SpinWait.SpinUntil(() => launcher.LastProgress is not null, TimeSpan.FromSeconds(2));
-        using var vm = new GameDataExportViewModel(new ViewFactory());
+        using var vm = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService());
         Check(vm.IsExporting && vm.ProgressValue == 5, "自动会话打开窗口后仍显示未开始");
         void Report(GameDataExportProgress data)
         {
@@ -252,7 +254,7 @@ static Task WindowAsync()
 [MethodImpl(MethodImplOptions.NoInlining)]
 static WeakReference ClosedWindow(PumpContext ui)
 {
-    var vm = new GameDataExportViewModel(new ViewFactory());
+    var vm = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService());
     vm.StartExportCommand.Execute(null);
     vm.Dispose();
     ui.Drain();

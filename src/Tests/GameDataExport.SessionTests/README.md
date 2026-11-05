@@ -50,3 +50,12 @@ Windows 上仍需验证真实 Npcap 驱动、接口 GUID 对应及非阻塞读�
 - 返回登录界面不会退出游戏进程，监控继续；文件写入使用 Monitoring 阶段，携带 playerId、输出路径、更新次数，并每 2 秒刷新状态。心跳不计作新的背包数据。
 - 窗口通过 DispatcherQueue 调度，使用最新结构化状态显示账号和路径；旧连接的无关 KCP 包不会切换当前玩家。
 - 测试使用真实游戏事件发布器，以及两次 RSA/AES 登录的完整导出链路；真实 WinUI DispatcherQueue / Npcap 驱动仍需 Windows 实机验证。请同步更新主程序及 ABI 包并重启旧宿主。
+
+## RSA 私钥导入回归
+
+- 导出窗口使用所属 `WindowSession` 的文件选择器，ViewModel 通过 `IGameDataExportKeyService` 调用独立的文件校验与凭据保存服务。
+- 接受未加密的 PKCS#1 / PKCS#8 RSA 私钥 PEM，拒绝公钥、其他算法、加密或损坏的 PEM，以及过大文件；校验失败和取消都不写入凭据。
+- 使用 `Haiyu/Secret/waves.kcp` 当前用户普通凭据；转换为 PKCS#8 DER 以适配 Windows 的 2560 字节上限，覆盖 2048 / 4096 位密钥。保存成功或失败后均清理临时私钥缓冲，不复制明文文件或记录密钥。
+- 导出端使用实际 `SecretAccessor` 解析器读取 DER，同时兼容已有 PEM。保留环境变量 → 凭据管理器 → DPAPI 的来源优先级。
+- 窗口覆盖选择取消、成功、失败、导入期间禁止启动、捕获期间禁止导入、选择文件时自动捕获启动，以及窗口关闭后不再调用导入服务。
+- Windows 下额外使用随机临时凭据 target 做真实跨组件读写并删除；非 Windows 环境跳过这项原生验证，其余业务、解析器和 ViewModel 测试照常运行。

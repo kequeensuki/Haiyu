@@ -9,7 +9,10 @@
   <ItemGroup>
     <ProjectReference Include="../../Extensions/ABI/ABIRuntime/ABIRuntime.csproj" />
     <ProjectReference Include="../../Waves.Core/Waves.Core.csproj" />
+    <ProjectReference Include="../../Extensions/Haiyu.ABI/Haiyu.ABI.csproj" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <Compile Include="../../WutheringWavesTool/Services/Contracts/IGameDataExportKeyService.cs" Link="IGameDataExportKeyService.cs" />
+    <Compile Include="../../WutheringWavesTool/Services/GameDataExportKeyService.cs" Link="GameDataExportKeyService.cs" />
     <!-- 链接实际会话和 VM 逻辑；Windows ABI 启动、窗口 API 由测试边界替身提供。 -->
     <Compile Include="../../WutheringWavesTool/Services/GameDataExportLauncher.cs" Link="GameDataExportLauncher.cs" />
     <Compile Include="../../WutheringWavesTool/Services/GameDataExportLauncher.Windows.cs" Link="GameDataExportLauncher.Windows.cs" />

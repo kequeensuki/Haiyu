@@ -267,6 +267,7 @@ public static class InstanceBuilderExtensions
                     )
                     .AddSingleton<ABIRuntimeService>()
                     .AddSingleton<Haiyu.Services.GameDataExportLauncher>()
+                    .AddSingleton<IGameDataExportKeyService, GameDataExportKeyService>()
                     #endregion
                     #region Toolkit
                     .AddTransient<ToolkitPage>()

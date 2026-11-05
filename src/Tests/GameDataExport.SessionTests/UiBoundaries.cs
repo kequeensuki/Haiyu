@@ -4,7 +4,21 @@ global using Haiyu.Common;
 global using Haiyu.Services;
 global using Microsoft.Extensions.DependencyInjection;
 
-namespace Haiyu.Common.Contracts { public interface IViewFactorys { } }
+namespace Haiyu.Common.Contracts
+{
+    public interface IViewFactorys { }
+    public sealed class WindowSession
+    {
+        public PickerContext Context { get; } = new();
+    }
+    public sealed class PickerContext { public TestPicker PickersService { get; } = new(); }
+    public sealed record TestPickedFile(string Path);
+    public sealed class TestPicker
+    {
+        public Func<IReadOnlyCollection<string>, Task<TestPickedFile?>> Pick { get; set; } = _ => Task.FromResult<TestPickedFile?>(null);
+        public Task<TestPickedFile?> GetFileOpenPicker(IReadOnlyCollection<string> extensions) => Pick(extensions);
+    }
+}
 namespace Haiyu.Common
 {
     // 仅替代 WinUI 宿主边界；测试直接编译和执行生产 ViewModel。

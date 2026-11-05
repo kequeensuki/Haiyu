@@ -412,7 +412,9 @@ public sealed class GameDataExportService
             throw new InvalidOperationException(error ?? "未找到 RSA 私钥。");
         }
 
-        keyLoader.LoadPrivateKeyPem(accessor.GetPem()!);
+        using var rsa = accessor.CreateRsa()
+            ?? throw new InvalidOperationException("保存的密钥不是有效的 RSA 私钥，请重新导入 PEM 文件。");
+        keyLoader.LoadPrivateKeyPem(rsa.ExportPkcs8PrivateKeyPem());
     }
 
     private static GameDataExportResult Failure(

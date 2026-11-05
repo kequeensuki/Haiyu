@@ -60,6 +60,16 @@
                     </Button>
                     <Button
                         Padding="14,8"
+                        Command="{x:Bind ViewModel.ImportKeyCommand}"
+                        Style="{ThemeResource TitleBarButtonStyle}"
+                        ToolTipService.ToolTip="{x:Bind helper:LanguageService.GetString('Toolkit_GameDataExportImportKeyTip')}">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <FontIcon FontSize="14" Glyph="&#xE8B5;" />
+                            <TextBlock Text="{x:Bind helper:LanguageService.GetString('Toolkit_GameDataExportImportKey')}" />
+                        </StackPanel>
+                    </Button>
+                    <Button
+                        Padding="14,8"
                         Command="{x:Bind ViewModel.OpenOutputFolderCommand}"
                         Style="{ThemeResource TitleBarButtonStyle}">
                         <StackPanel Orientation="Horizontal" Spacing="6">
@@ -68,6 +78,10 @@
                         </StackPanel>
                     </Button>
                 </StackPanel>
+                <TextBlock
+                    IsTextSelectionEnabled="True"
+                    Text="{x:Bind ViewModel.KeyImportMessage, Mode=OneWay}"
+                    TextWrapping="Wrap" />
                 <Border
                     Padding="12"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"

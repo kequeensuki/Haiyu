@@ -110,23 +110,23 @@ public sealed class SecretAccessor : IDisposable{
     public string? GetPem() => IsAvailable ? Encoding.UTF8.GetString(_raw!) : null;
 
     /// <summary>解析 RSA 私钥，返回值由调用方 Dispose。</summary>
-    public RSA? CreateRsa()
-    {
-        if (!IsAvailable)
-            return null;
+    public RSA? CreateRsa() => IsAvailable ? ParseRsa(_raw!) : null;
 
+    /// <summary>解析历史 PEM 文本或导入功能保存的 PKCS#8 DER。</summary>
+    internal static RSA? ParseRsa(ReadOnlySpan<byte> raw)
+    {
         var rsa = RSA.Create();
         try
         {
             // 优先 PEM；不是 PEM 就当 PKCS#8 DER 试一次
-            var text = Encoding.UTF8.GetString(_raw!);
+            var text = Encoding.UTF8.GetString(raw);
             if (text.Contains("-----BEGIN", StringComparison.Ordinal))
                 rsa.ImportFromPem(text);
             else
-                rsa.ImportPkcs8PrivateKey(_raw!, out _);
+                rsa.ImportPkcs8PrivateKey(raw, out _);
             return rsa;
         }
-        catch (CryptographicException)
+        catch (Exception ex) when (ex is CryptographicException or ArgumentException)
         {
             rsa.Dispose();
             return null;
