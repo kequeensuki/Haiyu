@@ -219,7 +219,7 @@ public sealed partial class ShellViewModel : ViewModelBase
         var close = await AppSettings.GetCloseWindowAsync();
         if (close == "True")
         {
-            Environment.Exit(0);
+            await ShutdownGameDataExportThenExit();
         }
         else if (close == "False")
         {
@@ -230,13 +230,36 @@ public sealed partial class ShellViewModel : ViewModelBase
             var result = await AppContext.WindowManager.Shell.DialogManager.ShowCloseWindowResult();
             if (result.IsExit)
             {
-                Environment.Exit(0);
+                await ShutdownGameDataExportThenExit();
             }
             else
             {
                 this.AppContext.WindowManager.Shell.Hide();
             }
         }
+    }
+
+    /// <summary>
+    /// 退出前收尾：游戏数据导出会话停止落盘（最多等 10s），然后退出进程。
+    /// 会话收尾依赖宿主仍在——宿主由 ABIRuntimeService 管道断开联动关闭，
+    /// 所以必须先于进程退出通知停止。
+    /// </summary>
+    private async Task ShutdownGameDataExportThenExit()
+    {
+        try
+        {
+            var launcher = Instance.Host.Services.GetService<Services.GameDataExportLauncher>();
+            if (launcher is not null)
+            {
+                await launcher.DisposeAsync();
+            }
+        }
+        catch
+        {
+            // 收尾失败也要退出（收尾内部已有 10s 上限）
+        }
+
+        Environment.Exit(0);
     }
 
     [RelayCommand]
@@ -248,7 +271,7 @@ public sealed partial class ShellViewModel : ViewModelBase
     [RelayCommand]
     void ExitWindow()
     {
-        Environment.Exit(0);
+        _ = ShutdownGameDataExportThenExit();
     }
 
     [RelayCommand]

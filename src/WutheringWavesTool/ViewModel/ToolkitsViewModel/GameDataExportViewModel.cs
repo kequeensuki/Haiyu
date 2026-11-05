@@ -39,37 +39,14 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
     public partial bool HasResult { get; private set; }
 
     /// <summary>
-    /// 开始导出。执行流程：
-    /// 等待游戏登录（用户此时启动/重登游戏）→ 拿会话密钥 → 解密背包 → 落盘 JSON。
-    /// 密钥缺失时返回的引导文案来自特权服务（密钥管理方案 §4.4）。
+    /// 开始导出（v2：经 Launcher 发起/复用会话）。
+    /// 若自动启动已建立会话，进入监控显示态而非重复发起。
     /// </summary>
     [RelayCommand]
     private async Task StartExportAsync()
     {
         if (IsExporting)
         {
-            return;
-        }
-
-        // Initialize 自带弹窗兜底，但失败（如 ABI 包未导入）会抛异常——
-        // 必须接住转为页面内提示，不能让它炸成全局错误对话框
-        try
-        {
-            var initialized = await AppContext.ABIRuntimeService.Initialize(
-                Waves.Settings.AppSettings.ABIRuntimeSavePath
-            );
-            if (!initialized || AppContext.ABIRuntimeService.Runtime is null)
-            {
-                HasResult = true;
-                ResultMessage = LanguageService.GetString("Toolkit_GameDataExportAbiMissing");
-                return;
-            }
-        }
-        catch (Exception ex)
-        {
-            HasResult = true;
-            ResultMessage = LanguageService.GetString("Toolkit_GameDataExportAbiMissing")
-                + $"\n{ex.Message}";
             return;
         }
 
@@ -81,46 +58,26 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
 
         try
         {
-            var progress = new Progress<IPrivilegedProgress<GameDataExportProgress>>(
-                report =>
-                {
-                    if (report.Data is not { } data)
-                    {
-                        return;
-                    }
+            var launcher = Instance.Host.Services.GetRequiredService<Services.GameDataExportLauncher>();
 
-                    ProgressValue = report.Percentage;
-                    ProgressMessage = data.Message;
-                }
-            );
+            // 幂等：已有会话（自动启动）直接进入监控显示，不重复发起
+            launcher.TryStart(out var session);
 
-            var result = await AppContext.ABIRuntimeService.Runtime.InvokeAsync(
-                Contract.GameDataExportContract,
-                new GameDataExportRequest(GameDataExportScope.Inventory),
-                progress,
-                CTS.Token
-            );
+            // 会话完成（v2 语义：收尾时才返回最终结果）
+            var export = await session;
 
-            if (result.Data is { } export)
-            {
-                HasResult = true;
-                ResultMessage = export.Success
-                    ? string.Format(
-                        LanguageService.GetString("Toolkit_GameDataExportDone"),
-                        export.Inventory?.NormalItems.Count ?? 0,
-                        export.Inventory?.Weapons.Count ?? 0,
-                        export.Inventory?.Phantoms.Count ?? 0,
-                        export.Inventory?.ValidTimeItems.Count ?? 0
-                    ) + (export.OutputJsonPath is null
-                        ? string.Empty
-                        : $"\n{export.OutputJsonPath}")
-                    : export.Message;
-            }
-            else
-            {
-                HasResult = true;
-                ResultMessage = result.Message;
-            }
+            HasResult = true;
+            ResultMessage = export.Success
+                ? string.Format(
+                    LanguageService.GetString("Toolkit_GameDataExportDone"),
+                    export.Inventory?.NormalItems.Count ?? 0,
+                    export.Inventory?.Weapons.Count ?? 0,
+                    export.Inventory?.Phantoms.Count ?? 0,
+                    export.Inventory?.ValidTimeItems.Count ?? 0
+                ) + (export.OutputJsonPath is null
+                    ? string.Empty
+                    : $"\n{export.OutputJsonPath}")
+                : export.Message;
         }
         catch (OperationCanceledException)
         {
@@ -138,11 +95,12 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
         }
     }
 
-    /// <summary>停止导出（特权服务会保留已抓到的数据并尽量完成解析）。</summary>
+    /// <summary>停止导出（宿主收尾落盘返回最新快照；会话由 Launcher 管理）。</summary>
     [RelayCommand]
-    private void StopExport()
+    private async Task StopExportAsync()
     {
-        CTS.Cancel();
+        var launcher = Instance.Host.Services.GetRequiredService<Services.GameDataExportLauncher>();
+        await launcher.StopAsync();
     }
 
     /// <summary>打开导出目录（Windows 资源管理器）。</summary>
