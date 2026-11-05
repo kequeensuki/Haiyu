@@ -39,6 +39,7 @@ namespace Waves.Settings;
     JsonTypeInfoPropertyName = nameof(AppSettingJsonContext.Default.MainWindowSetting)
 )]
 [Settings<string>(Name = "ABIRuntimePackagePath", Nullable = true)]
+[Settings<bool>(Name = "GameDataExportEnable", Nullable = true, DefaultValue = "True")]
 public partial class AppSettings : SettingBase
 {
     public static string BassFolder =>

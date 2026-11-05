@@ -41,7 +41,7 @@ public sealed class ABISystemConfigService
 
     async Task InstallPawnIOAsync(CancellationToken token =default)
     {
-        var installPath = Path.Combine(path,"Haiyu.ABI","Assets", "PawnIOSetup.exe");
+        var installPath = Path.Combine(path, "Assets", "PawnIOSetup.exe");
         if (!string.IsNullOrEmpty(path))
         {
             var process = Process.Start(new ProcessStartInfo(installPath, "-install"));

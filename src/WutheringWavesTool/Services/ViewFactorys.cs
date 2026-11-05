@@ -45,6 +45,17 @@ public class ViewFactorys : IViewFactorys
         CenterOnScreen = true,
         IsExtendWindowTitle = true,
     };
+    private static readonly WindowsOption GameDataExportWindowOption = new()
+    {
+        Width = 700,
+        Height = 560,
+        MaxWidth = 700,
+        MaxHeight = 560,
+        IsResizable = false,
+        IsMaximizable = false,
+        CenterOnScreen = true,
+        IsExtendWindowTitle = true,
+    };
     private static readonly WindowsOption DeviceInfoWindowOption = new()
     {
         Width = 750,
@@ -161,6 +172,18 @@ public class ViewFactorys : IViewFactorys
             {
                 WindowConfig = MoniterSettingWindowOption,
                 Key = $"MoniterSetting",
+                Parameter = null,
+            }
+        );
+    }
+
+    public void ShowGameDataExportWindow()
+    {
+        this.AppContext.WindowManager.CreateWindow<GameDataExportPage>(
+            new Models.Options.WindowManagerOption()
+            {
+                WindowConfig = GameDataExportWindowOption,
+                Key = $"GameDataExport",
                 Parameter = null,
             }
         );

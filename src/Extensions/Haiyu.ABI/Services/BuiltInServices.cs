@@ -1,6 +1,7 @@
 using ABI.Models;
 using ABIRuntime;
 using ABIRuntime.Abstractions;
+using Haiyu.ABI.Services.GameDataExport;
 using Haiyu.ABI.XBox.Commons;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -62,6 +63,15 @@ public static class BuiltInServices
         services.AddPrivilegedService<
             XboxSessionRequest, XboxSessionReportProcess, RunResult, XboxSessionService
         >(Contract.XboxSessionContract);
+
+        // 游戏数据导出：响应体是 GameDataExportResult（非 RunResult），
+        // 因为背包数据体量大，必须随结果返回。
+        services.AddPrivilegedService<
+            GameDataExportRequest,
+            GameDataExportProgress,
+            GameDataExportResult,
+            GameDataExportService
+        >(Contract.GameDataExportContract);
         return services;
     }
 }

@@ -276,6 +276,8 @@ public static class InstanceBuilderExtensions
                     .AddTransient<MonitorToolViewModel>()
                     .AddTransient<MonitorSettingPage>()
                     .AddTransient<MonitorSettingViewModel>()
+                    .AddTransient<GameDataExportPage>()
+                    .AddTransient<GameDataExportViewModel>()
                     #endregion
                     #region WindowContext
                     .AddScoped<ITipShow, TipShow>()

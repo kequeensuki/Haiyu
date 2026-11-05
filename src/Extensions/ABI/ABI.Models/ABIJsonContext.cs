@@ -24,6 +24,14 @@ namespace ABI.Models;
 [JsonSerializable(typeof(XboxReportProcess))]
 [JsonSerializable(typeof(XboxSessionRequest))]
 [JsonSerializable(typeof(XboxSessionReportProcess))]
+[JsonSerializable(typeof(GameDataExportRequest))]
+[JsonSerializable(typeof(GameDataExportProgress))]
+[JsonSerializable(typeof(GameDataExportResult))]
+[JsonSerializable(typeof(GameInventoryData))]
+[JsonSerializable(typeof(GameNormalItem))]
+[JsonSerializable(typeof(GameWeaponItem))]
+[JsonSerializable(typeof(GamePhantomItem))]
+[JsonSerializable(typeof(GameValidTimeItem))]
 public partial class ABIJsonContext : JsonSerializerContext
 {
     

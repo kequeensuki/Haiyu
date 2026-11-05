@@ -56,8 +56,24 @@ public sealed partial class ToolkitViewModel : ViewModelBase
     public partial string? MoniterInvokeStr { get; set; }
     #endregion
 
+    #region GameDataExport
+    /// <summary>游戏数据导出功能开关（持久化 AppSettings.GameDataExportEnable）。</summary>
+    [ObservableProperty]
+    public partial bool? GameDataExportEnable { get; set; }
+    #endregion
+
     [RelayCommand]
-    Task Loaded() => RunWhileAliveAsync(_ => RefreshTasks());
+    Task Loaded() => RunWhileAliveAsync(async _ =>
+    {
+        await RefreshTasks();
+        GameDataExportEnable = await AppSettings.GetGameDataExportEnableAsync();
+    });
+
+    partial void OnGameDataExportEnableChanged(bool? value)
+    {
+        if (value is { } enabled)
+            _ = AppSettings.SetGameDataExportEnableAsync(enabled);
+    }
 
     [RelayCommand]
     async Task RefreshTasks()
@@ -178,6 +194,18 @@ public sealed partial class ToolkitViewModel : ViewModelBase
     void ShowMoniterSetting()
     {
         ViewFactorys.ShowMoniterSettingWindow();
+    }
+
+    /// <summary>
+    /// 游戏数据导出：打开独立导出窗口（抓取游戏登录流量并导出背包数据）。
+    /// 功能开关关闭时直接忽略。
+    /// </summary>
+    [RelayCommand]
+    void ShowGameDataExport()
+    {
+        if (GameDataExportEnable == false)
+            return;
+        ViewFactorys.ShowGameDataExportWindow();
     }
 
     /// <summary>

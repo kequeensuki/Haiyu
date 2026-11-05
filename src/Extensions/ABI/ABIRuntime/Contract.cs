@@ -86,4 +86,21 @@ public static class Contract
             ABIJsonContext.Default.XboxSessionRequest,
             ABIJsonContext.Default.XboxSessionReportProcess,
             ABIJsonContext.Default.RunResult);
+
+    /// <summary>
+    /// 游戏数据导出（抓包 + 解密 + 落盘）。
+    /// 响应体是 <see cref="GameDataExportResult"/> 而非 <see cref="RunResult"/>——
+    /// 背包数据体量大，必须随结果返回。
+    /// </summary>
+    public static PrivilegedServiceContract<
+        GameDataExportRequest,
+        GameDataExportProgress,
+        GameDataExportResult
+    > GameDataExportContract =>
+        new(
+            "haiyu.gameDataExport.v1",
+            ABIJsonContext.Default.GameDataExportRequest,
+            ABIJsonContext.Default.GameDataExportProgress,
+            ABIJsonContext.Default.GameDataExportResult
+        );
 }

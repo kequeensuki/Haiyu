@@ -306,6 +306,9 @@
 		<Page Update="Pages\Toolkits\MonitorSettingPage.xaml">
 		  <SubType>Designer</SubType>
 		</Page>
+		<Page Update="Pages\Toolkits\GameDataExportPage.xaml">
+		  <Generator>MSBuild:Compile</Generator>
+		</Page>
 		<Page Update="Pages\Toolkits\MonitorToolPage.xaml">
 		  <SubType>Designer</SubType>
 		</Page>

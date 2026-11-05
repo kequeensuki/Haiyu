@@ -1,0 +1,132 @@
+// WavesGameData.proto —— 游戏数据导出所需的最小 proto 子集
+//
+// ★ 字段号来源（唯一权威）：
+//   C:\Users\38053\Desktop\WutheringMod\DecompiledSource\Aki.Protocol\*.cs
+//   每个 message 文件里都有 `public const int XxxFieldNumber = N;`
+//   并与 `output.WriteRawTag(N)` 交叉验证（字段号 = tag >> 3）。
+//
+// ★ 为什么不直接引用 Aki.Protocol.dll：
+//   · 该 dll 有 6670 个类型、13MB，我们只需要 9 个 message
+//   · Haiyu.ABI 是 PublishAot=true，动态加载 + 反射不可靠
+//   · 编译期生成是纯 C#，AOT 下零风险
+//
+// ★ 字段号不连续（必须照抄，不能按直觉写）：
+//   normalItemList=3、weaponItemList=6、itemList=14、expireTime=4、key=3
+//
+// ★ 游戏版本更新后需重新核对字段号，方法见：
+//   doc/游戏数据导出方案.md §9「字段号提取方法」
+
+syntax = "proto3";
+
+package WavesGameData;
+
+option csharp_namespace = "Haiyu.ABI.Protocol";
+
+// ══════════════════════════════════════════════════════════
+// 会话密钥协商（msgId 111/112，明文）
+// ══════════════════════════════════════════════════════════
+
+// 112 ProtoKeyResponse —— 只需 Key 字段，用于 RSA 解出 32 字节会话密钥
+message ProtoKeyResponse {
+  int32 code = 1;
+  int32 type = 2;
+  bytes key  = 3;   // ★ 字段号 3（不是 1 或 2），256 字节 RSA 密文
+}
+
+// ══════════════════════════════════════════════════════════
+// 背包：普通道具（msgId 22445）
+// ══════════════════════════════════════════════════════════
+
+message NormalItemResponse {
+  repeated NormalItem normalItemList = 3;   // ★ 字段号 3
+}
+
+message NormalItem {
+  int32 id         = 1;
+  int32 count      = 2;
+  int64 expireTime = 4;                     // ★ 跳过 3
+}
+
+// ══════════════════════════════════════════════════════════
+// 背包：武器（msgId 27089）
+// ══════════════════════════════════════════════════════════
+
+message WeaponItemResponse {
+  repeated WeaponItem weaponItemList = 6;   // ★ 字段号 6
+}
+
+message WeaponItem {
+  int32 id               = 1;
+  int32 incrId           = 2;
+  int32 funcValue        = 3;
+  int32 weaponLevel      = 4;
+  int32 weaponExp        = 5;
+  int32 weaponBreach     = 6;
+  int32 weaponResonLevel = 7;
+  int32 roleId           = 8;
+}
+
+// ══════════════════════════════════════════════════════════
+// 背包：声骸（msgId 26275）
+// ══════════════════════════════════════════════════════════
+
+message PhantomItemResponse {
+  int32 directRefineWeekTimes          = 1;
+  int32 totalCost                      = 2;
+  repeated PhantomItem phantomItemList = 3;
+  repeated RolePhantomPropInfo  propInfo  = 5;
+  repeated RolePhantomEquipInfo equipInfo = 8;
+  repeated int32 unlockSkins              = 15;
+}
+
+message PhantomItem {
+  int32 id                               = 1;
+  int32 incrId                           = 2;
+  int32 funcValue                        = 3;
+  int32 phantomLevel                     = 4;
+  int32 phantomExp                       = 5;
+  repeated PhantomPropInfo phantomMainProp = 6;
+  repeated PhantomPropInfo phantomSubProp  = 7;
+  int32 fetterGroupId                    = 8;
+  int32 skinId                           = 9;
+  repeated PhantomPropInfo unAckSubProp   = 10;
+  repeated int32 lockPropIndex           = 11;
+  int32 stackCount                       = 12;
+  int64 addTime                          = 13;
+}
+
+message PhantomPropInfo {
+  int32 phantomPropId = 1;
+  int32 value         = 2;
+}
+
+message RolePhantomPropInfo {
+  int32 roleId                  = 1;
+  repeated ArrayIntInt baseProp = 2;
+  repeated ArrayIntInt addProp  = 3;
+}
+
+message RolePhantomEquipInfo {
+  int32 roleId                     = 1;
+  repeated int32 phantomItemIncrId = 2;
+}
+
+message ArrayIntInt {
+  int32 key   = 1;
+  int32 value = 2;
+}
+
+// ══════════════════════════════════════════════════════════
+// 背包：限时道具（msgId 20447）
+// ══════════════════════════════════════════════════════════
+
+message ValidTimeItemResponse {
+  repeated ValidTimeItem itemList = 14;     // ★ 字段号 14
+}
+
+message ValidTimeItem {
+  int32 id         = 1;
+  int32 count      = 2;
+  int32 incrId     = 3;
+  int64 expireTime = 4;
+}

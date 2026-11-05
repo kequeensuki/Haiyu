@@ -1,4 +1,5 @@
 using ABI.Models;
+using Waves.Core.Services;
 using ABIRuntime.Abstractions;
 using ABIRuntime.Runtime;
 using Haiyu.Plugin.Common.LegacyMessageBox;
@@ -53,10 +54,14 @@ public sealed class ABIRuntimeService
                 _initialized = result.IsSuccess;
                 return _initialized;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                // 真实异常必须落日志——此弹窗曾吞掉根因（如 PawnIO 路径 bug 曾不可见）
+                Instance.Host.Services.GetRequiredKeyedService<LoggerService>("AppLog")
+                    .WriteError($"ABI 运行时初始化失败：{ex}");
                 LegacyMessageBox.ShowError(
-                    LanguageService.GetString("AbiRuntime_InitializeFailed"),
+                    LanguageService.GetString("AbiRuntime_InitializeFailed")
+                        + $"\n{ex.Message}",
                     LanguageService.GetString("Dialog_ShowError")
                 );
                 return false;
