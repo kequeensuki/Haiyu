@@ -35,6 +35,16 @@ public sealed class GameDataExportLauncher : IDisposable
     private CancellationTokenSource? _sessionCts;
     private Task<GameDataExportResult>? _sessionTask;
     private DateTimeOffset _lastProgressTick;
+    private (string Message, int Percentage)? _lastProgress;
+
+    public (string Message, int Percentage)? LastProgress
+    {
+        get
+        {
+            lock (_gate)
+                return _lastProgress;
+        }
+    }
 
     /// <summary>会话是否进行中。</summary>
     public bool IsSessionActive
@@ -67,6 +77,7 @@ public sealed class GameDataExportLauncher : IDisposable
             }
 
             _sessionCts = new CancellationTokenSource();
+            _lastProgress = null;
             _lastProgressTick = DateTimeOffset.Now;
             var cts = _sessionCts;
             var runtime = Instance.Host.Services.GetRequiredService<ABIRuntimeService>();
@@ -84,8 +95,17 @@ public sealed class GameDataExportLauncher : IDisposable
 
                 var progress = new Progress<IPrivilegedProgress<GameDataExportProgress>>(p =>
                 {
-                    _lastProgressTick = DateTimeOffset.Now;
-                    ProgressChanged?.Invoke(p.Message, p.Percentage);
+                    // 外层是 ABI 传输状态；业务阶段、文案和百分比在 Data 中。
+                    var message = p.Data?.Message ?? p.Message;
+                    var percentage = p.Data?.Percentage ?? p.Percentage;
+                    lock (_gate)
+                    {
+                        if (!ReferenceEquals(_sessionCts, cts))
+                            return;
+                        _lastProgressTick = DateTimeOffset.Now;
+                        _lastProgress = (message, percentage);
+                    }
+                    ProgressChanged?.Invoke(message, percentage);
                 });
 
                 var result = await runtime.Runtime.InvokeAsync(

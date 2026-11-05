@@ -16,9 +16,31 @@ namespace Haiyu.ViewModel.ToolkitsViewModel;
 /// </summary>
 public sealed partial class GameDataExportViewModel : ViewModelBase
 {
+    private readonly Services.GameDataExportLauncher _launcher;
+    private readonly IProgress<(string Message, int Percentage)> _progress;
+
     public GameDataExportViewModel(IViewFactorys viewFactorys)
     {
         ViewFactorys = viewFactorys;
+        _launcher = Instance.Host.Services.GetRequiredService<Services.GameDataExportLauncher>();
+        // 在 UI 线程创建，Launcher 的线程池回调经此调度回 UI。
+        _progress = new Progress<(string Message, int Percentage)>(p =>
+        {
+            if (IsDisposed)
+                return;
+            ProgressMessage = p.Message;
+            ProgressValue = p.Percentage;
+        });
+        _launcher.ProgressChanged += OnProgressChanged;
+    }
+
+    private void OnProgressChanged(string message, int percentage) =>
+        _progress.Report((message, percentage));
+
+    protected override void OnDisposing()
+    {
+        _launcher.ProgressChanged -= OnProgressChanged;
+        base.OnDisposing();
     }
 
     public IViewFactorys ViewFactorys { get; }
@@ -62,6 +84,11 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
 
             // 幂等：已有会话（自动启动）直接进入监控显示，不重复发起
             launcher.TryStart(out var session);
+            if (launcher.LastProgress is { } latest)
+            {
+                ProgressMessage = latest.Message;
+                ProgressValue = latest.Percentage;
+            }
 
             // 会话完成（v2 语义：收尾时才返回最终结果）
             var export = await session;
