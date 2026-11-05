@@ -85,7 +85,20 @@ public sealed partial record GameDataExportResult(
     [property: JsonPropertyName("sessionKeyHex")] string? SessionKeyHex,
     // ── v2 持续监控新增（尾部追加，两端同包部署无兼容负担）──
     [property: JsonPropertyName("playerId")] int PlayerId = 0,
-    [property: JsonPropertyName("updateCount")] int UpdateCount = 0
+    [property: JsonPropertyName("updateCount")] int UpdateCount = 0,
+    [property: JsonPropertyName("playerSummaries")] GameDataExportPlayerSummary[]? PlayerSummaries = null
+);
+
+/// <summary>本次捕获中单个玩家最近一次成功导出的摘要，不保留额外背包或会话密钥副本。</summary>
+[MemoryPackable]
+public sealed partial record GameDataExportPlayerSummary(
+    [property: JsonPropertyName("playerId")] int PlayerId,
+    [property: JsonPropertyName("updateCount")] int UpdateCount,
+    [property: JsonPropertyName("normalItemCount")] int NormalItemCount,
+    [property: JsonPropertyName("weaponCount")] int WeaponCount,
+    [property: JsonPropertyName("phantomCount")] int PhantomCount,
+    [property: JsonPropertyName("validTimeItemCount")] int ValidTimeItemCount,
+    [property: JsonPropertyName("outputJsonPath")] string OutputJsonPath
 );
 
 #endregion

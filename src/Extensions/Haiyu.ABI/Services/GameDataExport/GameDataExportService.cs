@@ -85,6 +85,7 @@ public sealed class GameDataExportService
         var decodedTotal = 0;
         // 次数属于玩家，不属于抓包连接；切网重连或切回同一账号时继续累计。
         var updatesByPlayer = new Dictionary<int, int>();
+        var summariesByPlayer = new Dictionary<int, GameDataExportPlayerSummary>();
         var writtenVersions = new Dictionary<uint, int>();
         var lastAttempts = new Dictionary<uint, long>();
         var lastReport = Environment.TickCount64;
@@ -97,6 +98,18 @@ public sealed class GameDataExportService
         uint? lastVerifiedConnection = null;
         var keyReported = false;
         GameDataExportResult? lastResult = null;
+
+        void RememberExport(GameDataExportResult result)
+        {
+            if (result is not { Success: true, OutputJsonPath: not null, Inventory: not null }) return;
+            updatesByPlayer[result.PlayerId] = result.UpdateCount;
+            summariesByPlayer[result.PlayerId] = new(result.PlayerId, result.UpdateCount,
+                result.Inventory.NormalItems.Count, result.Inventory.Weapons.Count,
+                result.Inventory.Phantoms.Count, result.Inventory.ValidTimeItems.Count, result.OutputJsonPath);
+        }
+
+        GameDataExportResult Complete(GameDataExportResult result) =>
+            result with { PlayerSummaries = summariesByPlayer.Values.OrderBy(s => s.PlayerId).ToArray() };
 
         void RemoveConnection(uint conv)
         {
@@ -276,7 +289,7 @@ public sealed class GameDataExportService
                     if (lastResult.OutputJsonPath is not null)
                     {
                         writtenVersions[pair.Key] = state.Version;
-                        updatesByPlayer[playerId] = updateCount;
+                        RememberExport(lastResult);
                     }
                 }
                 if (Environment.TickCount64 - lastReport >= 2000)
@@ -319,15 +332,15 @@ public sealed class GameDataExportService
                         firstExport: updateCount == 1, playerId: playerId,
                         sessionKey: state.SessionKey!).ConfigureAwait(false);
                     if (lastResult.OutputJsonPath is not null)
-                        updatesByPlayer[playerId] = updateCount;
+                        RememberExport(lastResult);
                 }
             }
-            return lastResult ?? Failure("监控已停止，尚未取得完整背包及玩家身份信息，未生成导出文件。", captured, decodedTotal, null);
+            return Complete(lastResult ?? Failure("监控已停止，尚未取得完整背包及玩家身份信息，未生成导出文件。", captured, decodedTotal, null));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             Report(progress, GameDataExportStage.Failed, 100, ex.Message);
-            return Failure(ex.Message, captured, decodedTotal, null);
+            return Complete(Failure(ex.Message, captured, decodedTotal, null));
         }
         finally
         {

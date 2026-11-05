@@ -242,10 +242,23 @@ static Task WindowAsync()
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
         Check(!weak.IsAlive, "关闭的窗口 VM 被会话长期保留");
         Check(launcher.IsSessionActive, "关闭观察窗口终止了实际会话");
-        done.SetResult(Result());
+        done.SetResult(Result() with
+        {
+            PlayerSummaries =
+            [
+                new(123, 2, 451, 69, 429, 0, "123/latest.json"),
+                new(456, 1, 20, 30, 40, 1, "456/new.json")
+            ]
+        });
         Check(task.Wait(TimeSpan.FromSeconds(2)), "会话未结束");
         ui.Drain();
         Check(!vm.IsExporting && vm.HasResult, "未接收终态");
+        Check(vm.ResultMessage.Contains("2 个玩家") && vm.ResultMessage.Contains("玩家 123")
+            && vm.ResultMessage.Contains("玩家 456") && vm.ResultMessage.Contains("普通道具 451")
+            && vm.ResultMessage.Contains("声骸 40") && vm.ResultMessage.Contains("123/latest.json")
+            && vm.ResultMessage.Contains("456/new.json"), "结束后丢失多玩家统计或路径");
+        using var reopened = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService());
+        Check(reopened.HasResult && reopened.ResultMessage == vm.ResultMessage, "重新打开窗口丢失本次捕获汇总");
         services.Dispose();
     }
     finally { SynchronizationContext.SetSynchronizationContext(previous); }

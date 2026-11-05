@@ -27,6 +27,7 @@ namespace ABI.Models;
 [JsonSerializable(typeof(GameDataExportRequest))]
 [JsonSerializable(typeof(GameDataExportProgress))]
 [JsonSerializable(typeof(GameDataExportResult))]
+[JsonSerializable(typeof(GameDataExportPlayerSummary))]
 [JsonSerializable(typeof(GameInventoryData))]
 [JsonSerializable(typeof(GameNormalItem))]
 [JsonSerializable(typeof(GameWeaponItem))]

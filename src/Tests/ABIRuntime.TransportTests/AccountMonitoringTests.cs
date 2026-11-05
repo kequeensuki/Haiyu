@@ -15,9 +15,10 @@ internal static partial class Program
     {
         foreach (var switchBack in new[] { false, true })
             await VerifyAccountMonitoringAsync(switchBack);
+        await VerifyAccountMonitoringAsync(false, failSecond: true);
     }
 
-    private static async Task VerifyAccountMonitoringAsync(bool switchBack)
+    private static async Task VerifyAccountMonitoringAsync(bool switchBack, bool failSecond = false)
     {
         using var rsa = RSA.Create(2048);
         var firstKey = RandomNumberGenerator.GetBytes(32);
@@ -71,6 +72,7 @@ internal static partial class Program
                 loader => loader.LoadPrivateKeyPem(rsa.ExportPkcs8PrivateKeyPem()), (result, timestamp) =>
                 {
                     writes++;
+                    if (failSecond && writes == 2) throw new IOException("模拟后续账号导出异常");
                     var path = InventoryJsonWriter.TryWriteToRoot(root, result, timestamp);
                     if (writes == 1) Login(2, 222222, secondKey);
                     else if (writes == 2 && switchBack) Login(3, 111111, firstKey);
@@ -93,8 +95,36 @@ internal static partial class Program
                 });
             var result = await service.ExecuteAsync(new(GameDataExportScope.Inventory),
                 new InlineProgress<GameDataExportProgress>(reports.Add), timeout.Token);
+            if (failSecond)
+            {
+                Equal(false, result.Success);
+                Equal(1, result.PlayerSummaries!.Length);
+                Equal(111111, result.PlayerSummaries[0].PlayerId);
+                Equal(true, File.Exists(result.PlayerSummaries[0].OutputJsonPath));
+                return;
+            }
             Equal(true, result.Success);
             Equal(switchBack ? 3 : 2, writes);
+            Equal(2, result.PlayerSummaries!.Length);
+            var first = result.PlayerSummaries.Single(s => s.PlayerId == 111111);
+            var second = result.PlayerSummaries.Single(s => s.PlayerId == 222222);
+            Equal(switchBack ? 2 : 1, first.UpdateCount);
+            Equal(1, second.UpdateCount);
+            foreach (var summary in result.PlayerSummaries)
+            {
+                Equal(1, summary.NormalItemCount);
+                Equal(0, summary.WeaponCount);
+                Equal(0, summary.PhantomCount);
+                Equal(0, summary.ValidTimeItemCount);
+                Equal(true, File.Exists(summary.OutputJsonPath));
+                Equal(true, summary.OutputJsonPath.Contains(summary.PlayerId.ToString()));
+            }
+            var packed = MemoryPack.MemoryPackSerializer.Serialize(result, ABIMemoryPack.Options);
+            var restored = MemoryPack.MemoryPackSerializer.Deserialize<GameDataExportResult>(packed, ABIMemoryPack.Options)!;
+            Equal(true, result.PlayerSummaries.SequenceEqual(restored.PlayerSummaries!));
+            var json = System.Text.Json.JsonSerializer.Serialize(result, ABIJsonContext.Default.GameDataExportResult);
+            var jsonResult = System.Text.Json.JsonSerializer.Deserialize(json, ABIJsonContext.Default.GameDataExportResult)!;
+            Equal(true, result.PlayerSummaries.SequenceEqual(jsonResult.PlayerSummaries!));
             var acquired = reports.Single(p => p.SessionKeyAcquired);
             var wire = MemoryPack.MemoryPackSerializer.Serialize(acquired);
             Equal(true, MemoryPack.MemoryPackSerializer.Deserialize<GameDataExportProgress>(wire)!.SessionKeyAcquired);

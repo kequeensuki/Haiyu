@@ -47,7 +47,15 @@ namespace Haiyu.Services
         public ABIRuntime.Runtime.PrivilegedRuntime? Runtime => null;
         public Task<bool> Initialize(string path) => Task.FromResult(false);
     }
-    public static class LanguageService { public static string GetString(string key) => key; }
+    public static class LanguageService
+    {
+        public static string GetString(string key) => key switch
+        {
+            "Toolkit_GameDataExportSummaryDone" => "本次捕获已结束，共导出 {0} 个玩家。",
+            "Toolkit_GameDataExportPlayerSummary" => "玩家 {0}（已更新 {1} 次）\n普通道具 {2}、武器 {3}、声骸 {4}、限时道具 {5}\n{6}",
+            _ => key
+        };
+    }
     public static class WindowExtension
     {
         public const int SW_SHOWNORMAL = 1;

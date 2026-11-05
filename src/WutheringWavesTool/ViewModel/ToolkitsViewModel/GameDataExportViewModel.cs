@@ -65,13 +65,27 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
         }
         var result = _launcher.LastResult;
         HasResult = !IsExporting && result is not null;
-        ResultMessage = HasResult
-            ? (result!.Success
-                ? string.Format(LanguageService.GetString("Toolkit_GameDataExportDone"),
-                    result.Inventory?.NormalItems.Count ?? 0, result.Inventory?.Weapons.Count ?? 0,
-                    result.Inventory?.Phantoms.Count ?? 0, result.Inventory?.ValidTimeItems.Count ?? 0)
-                : result.Message) + (result.OutputJsonPath is null ? string.Empty : $"\n{result.OutputJsonPath}")
-            : string.Empty;
+        ResultMessage = HasResult ? FormatResult(result!) : string.Empty;
+    }
+
+    private static string FormatResult(GameDataExportResult result)
+    {
+        if (result.PlayerSummaries is { Length: > 0 } summaries)
+        {
+            var heading = result.Success
+                ? string.Format(LanguageService.GetString("Toolkit_GameDataExportSummaryDone"), summaries.Length)
+                : result.Message;
+            var players = summaries.Select(s => string.Format(
+                LanguageService.GetString("Toolkit_GameDataExportPlayerSummary"),
+                s.PlayerId, s.UpdateCount, s.NormalItemCount, s.WeaponCount,
+                s.PhantomCount, s.ValidTimeItemCount, s.OutputJsonPath));
+            return heading + "\n\n" + string.Join("\n\n", players);
+        }
+        return (result.Success
+            ? string.Format(LanguageService.GetString("Toolkit_GameDataExportDone"),
+                result.Inventory?.NormalItems.Count ?? 0, result.Inventory?.Weapons.Count ?? 0,
+                result.Inventory?.Phantoms.Count ?? 0, result.Inventory?.ValidTimeItems.Count ?? 0)
+            : result.Message) + (result.OutputJsonPath is null ? string.Empty : $"\n{result.OutputJsonPath}");
     }
 
     protected override void OnDisposing()
