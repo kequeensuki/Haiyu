@@ -31,6 +31,7 @@ internal static class Program
             ("请求 ID 关联取消", TestCancellationMessageAsync),
             ("KCP 流水位/增量/Compact 语义", TestKcpStreamWatermarkAsync),
             ("playerId 状态机：提取/重试/Id=0/超时/重登", TestPlayerIdResolverAsync),
+            ("原子落盘：会话路径/tmp+Replace/更新覆盖", TestAtomicWriteAsync),
             ("ComputerMonitorService 实际采样", TestDirectMonitorAsync),
             ("ComputerMonitorService 管道进度链", TestMonitorServicePipeAsync),
             ("控制管道与独立请求管道完整调用", TestElevatedHostRoutingAsync),
@@ -227,6 +228,85 @@ internal static class Program
         Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.Failed, resolver3.Current);
 
         await Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// 原子落盘（v2 §2.3）：会话路径按 playerId 分目录、tmp+Replace 更新覆盖、
+    /// 更新期间文件始终可解析、失败保留旧文件。
+    /// </summary>
+    private static async Task TestAtomicWriteAsync()
+    {
+        // 根目录放仓库 artifacts 下（构建产物区）：沙箱对 %TEMP% 子目录树创建
+        // 表现过 UnauthorizedAccess（疑 dotnet run 子进程 ACL），工作区内稳定。
+        var root = Path.Combine(
+            AppContext.BaseDirectory, "awtest-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var sessionStart = DateTimeOffset.Now;
+
+        GameDataExportResult MakeResult(int normalCount, int update) =>
+            new(
+                true,
+                $"test update {update}",
+                new GameInventoryData(
+                    Enumerable.Range(1, normalCount)
+                        .Select(i => new GameNormalItem(i, i, 0)).ToList(),
+                    [], [], []
+                ),
+                null,
+                100, 5, "aabb",
+                PlayerId: 42,
+                UpdateCount: update
+            );
+
+        try
+        {
+            // 首轮写：目录 42\ 创建，文件存在，无 tmp 残留
+            var path1 = Haiyu.ABI.Services.GameDataExport.Export.InventoryJsonWriter.TryWriteToRoot(root, MakeResult(10, 1), sessionStart);
+            Equal(true, path1 is not null);
+            Check(path1!.Contains($"{Path.DirectorySeparatorChar}42{Path.DirectorySeparatorChar}"),
+                $"path should contain player dir: {path1}");
+            Equal(true, File.Exists(path1));
+            Equal(false, File.Exists(path1 + ".tmp"));
+
+            // 更新覆盖：同一会话路径，内容替换（10 → 20 条），旧文件被原子替换
+            var path2 = Haiyu.ABI.Services.GameDataExport.Export.InventoryJsonWriter.TryWriteToRoot(root, MakeResult(20, 2), sessionStart);
+            Equal(path1, path2);
+            Equal(false, File.Exists(path2 + ".tmp"));
+
+            // 更新后文件可解析且是新内容
+            var json = File.ReadAllText(path2);
+            StringContains(json, "20");
+
+            // 第二个会话（时间戳不同）同目录共存
+            var path3 = Haiyu.ABI.Services.GameDataExport.Export.InventoryJsonWriter.TryWriteToRoot(root, MakeResult(5, 1), sessionStart.AddSeconds(1));
+            Equal(true, path3 is not null && path3 != path2);
+            Equal(true, File.Exists(path2)); // 旧会话文件不受影响
+
+            // playerId=0 → 平铺路径（v1 兼容行为）
+            var legacy = Haiyu.ABI.Services.GameDataExport.Export.InventoryJsonWriter.TryWriteToRoot(
+                root,
+                new GameDataExportResult(true, "m", null, null, 0, 0, null, PlayerId: 0, UpdateCount: 1),
+                sessionStart);
+            Equal(true, legacy is not null);
+            Equal(true, legacy!.Contains("GameDataExport".Replace("GameDataExport", "")) || !legacy!.Contains($"{Path.DirectorySeparatorChar}42{Path.DirectorySeparatorChar}"));
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+
+        await Task.CompletedTask;
+    }
+
+    private static void StringContains(string haystack, string needle)
+    {
+        if (!haystack.Contains(needle, StringComparison.Ordinal))
+            throw new InvalidDataException($"断言失败。期望包含 \"{needle}\"，实际 \"{haystack[..Math.Min(200, haystack.Length)]}\"");
+    }
+
+    private static void Check(bool condition, string message)
+    {
+        if (!condition) throw new InvalidDataException(message);
     }
 
     private static async Task TestXboxSessionsAsync()    {

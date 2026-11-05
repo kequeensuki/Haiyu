@@ -11,6 +11,11 @@
     <DelaySign>False</DelaySign>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- 测试工程访问 internal（原子写路径验证用） -->
+    <InternalsVisibleTo Include="ABIRuntime.TransportTests" />
+  </ItemGroup>
+
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <IsAotCompatible>True</IsAotCompatible>
   </PropertyGroup>

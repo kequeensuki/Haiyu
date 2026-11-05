@@ -20,13 +20,27 @@ public static class GameDataExportPaths
             "GameDataExport"
         );
 
-    /// <summary>生成带时间戳的 JSON 文件路径，并确保目录存在。</summary>
+    /// <summary>生成带时间戳的 JSON 文件路径，并确保目录存在。（v1 保留：回放工具用）</summary>
     public static string BuildJsonPath(DateTimeOffset timestamp)
     {
         Directory.CreateDirectory(OutputDirectory);
         return Path.Combine(
             OutputDirectory,
             $"game-data-{timestamp:yyyyMMdd-HHmmss}.json"
+        );
+    }
+
+    /// <summary>
+    /// v2 会话路径：<c>GameDataExport\{playerId}\game-data-{sessionStart}.json</c>。
+    /// 同一玩家多次会话 = 同目录多个文件（时间戳不同），历史可查。
+    /// </summary>
+    public static string BuildSessionPath(int playerId, DateTimeOffset sessionStart)
+    {
+        var directory = Path.Combine(OutputDirectory, playerId.ToString());
+        Directory.CreateDirectory(directory);
+        return Path.Combine(
+            directory,
+            $"game-data-{sessionStart:yyyyMMdd-HHmmss}.json"
         );
     }
 }
@@ -47,31 +61,86 @@ public static class InventoryJsonWriter
     };
 
     /// <summary>尝试落盘，成功返回文件路径，失败返回 <c>null</c>。</summary>
+    /// <remarks>
+    /// ★ v2 原子写（持续监控下的更新语义）：
+    ///   ① playerId 已知（&gt;0）→ 会话路径 <c>{playerId}\game-data-{ts}.json</c>，
+    ///      同一会话的每次更新覆盖同一文件；
+    ///   ② 写同目录 <c>.tmp</c> → <see cref="File.Replace"/>（NTFS 原子）/
+    ///      目标不存在时 <see cref="File.Move"/>（首次写无替换对象）；
+    ///      任何一步失败保留旧文件不动（数据安全），返回 null；
+    ///   ③ playerId 未取得（v1 兼容路径 / 阶段 2 快速失败前的过渡）→ v1 平铺路径。
+    /// </remarks>
     public static string? TryWrite(GameDataExportResult result, DateTimeOffset timestamp)
     {
+        var path = result.PlayerId > 0
+            ? GameDataExportPaths.BuildSessionPath(result.PlayerId, timestamp)
+            : GameDataExportPaths.BuildJsonPath(timestamp);
+        var document = BuildDocument(result, timestamp);
+        return WriteAtomicTo(path, document);
+    }
+
+    /// <summary>internal 测试钩子：以指定目录为根执行同样的路径规则与原子写。</summary>
+    internal static string? TryWriteToRoot(
+        string rootDirectory,
+        GameDataExportResult result,
+        DateTimeOffset timestamp)
+    {
+        var path = result.PlayerId > 0
+            ? Path.Combine(rootDirectory, result.PlayerId.ToString(),
+                $"game-data-{timestamp:yyyyMMdd-HHmmss}.json")
+            : Path.Combine(rootDirectory, $"game-data-{timestamp:yyyyMMdd-HHmmss}.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var document = BuildDocument(result, timestamp);
+        return WriteAtomicTo(path, document);
+    }
+
+    /// <summary>原子写：tmp → Replace/Move。失败保留旧文件，返回 null。</summary>
+    private static string? WriteAtomicTo(string path, JsonDocument document)
+    {
+        var tmpPath = path + ".tmp";
         try
         {
-            var path = GameDataExportPaths.BuildJsonPath(timestamp);
-            var document = BuildDocument(result, timestamp);
-
-            using var stream = new FileStream(
-                path,
+            using (var stream = new FileStream(
+                tmpPath,
                 FileMode.Create,
                 FileAccess.Write,
                 FileShare.None
-            );
-            using var writer = new Utf8JsonWriter(stream, WriterOptions);
-            document.WriteTo(writer);
-            writer.Flush();
+            ))
+            using (var writer = new Utf8JsonWriter(stream, WriterOptions))
+            {
+                document.WriteTo(writer);
+                writer.Flush();
+            }
+
+            if (File.Exists(path))
+                File.Replace(tmpPath, path, null); // NTFS 原子替换
+            else
+                File.Move(tmpPath, path);          // 首次写：无替换对象
+
             return path;
         }
         catch (IOException)
         {
+            TryDeleteQuiet(tmpPath);
             return null;
         }
         catch (UnauthorizedAccessException)
         {
+            TryDeleteQuiet(tmpPath);
             return null;
+        }
+    }
+
+    private static void TryDeleteQuiet(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch
+        {
+            // 清理失败不影响主流程（tmp 残留无害，下次 Create 覆盖）
         }
     }
 
