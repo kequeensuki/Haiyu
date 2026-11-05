@@ -44,6 +44,8 @@ public static class ABIMemoryPack
         MemoryPackFormatterProvider.Register<GameDataExportRequest>();
         MemoryPackFormatterProvider.Register<GameDataExportProgress>();
         MemoryPackFormatterProvider.Register<GameDataExportResult>();
+        MemoryPackFormatterProvider.Register<GameDataExportEventStats>();
+        MemoryPackFormatterProvider.Register<GameDataExportPlayerEventStats>();
         MemoryPackFormatterProvider.Register<GameDataExportPlayerSummary>();
         MemoryPackFormatterProvider.Register<GameInventoryData>();
         MemoryPackFormatterProvider.Register<GameNormalItem>();

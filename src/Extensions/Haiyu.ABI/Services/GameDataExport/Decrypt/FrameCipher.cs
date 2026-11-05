@@ -101,6 +101,19 @@ public static class FrameCipher
         return TryInflate(plain, frame.OrigSize, out var inflated) ? inflated : plain;
     }
 
+    /// <summary>通用事件路径严格区分密文、解密失败和解压失败，禁止把中间字节当 protobuf。</summary>
+    internal static bool TryDecrypt(GatewayFrame frame, byte[]? key, out byte[]? plain, out string? status)
+    {
+        plain=null;status=null;
+        if(!frame.IsPlaintext && !IsValidSessionKey(key)){status="key_unavailable";return false;}
+        var decrypted=DecryptRaw(frame,key);
+        if(!frame.IsPlaintext && frame.Payload.Length>0 && frame.Payload.Length % BlockSize == 0 && ReferenceEquals(decrypted,frame.Payload))
+        {status="decrypt_failed";return false;}
+        if(frame.IsCompressed && !TryInflate(decrypted,frame.OrigSize,out decrypted))
+        {status="decompress_failed";return false;}
+        plain=decrypted;return true;
+    }
+
     /// <summary>只做解密（不含解压）。</summary>
     public static byte[] DecryptRaw(GatewayFrame frame, byte[]? sessionKey)
     {

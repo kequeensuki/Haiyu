@@ -15,6 +15,7 @@
     <!-- 测试工程访问 internal（原子写路径验证用） -->
     <InternalsVisibleTo Include="ABIRuntime.TransportTests" />
     <InternalsVisibleTo Include="GameDataExport.SessionTests" />
+    <InternalsVisibleTo Include="GameDataExport.ProtocolSmoke" />
   </ItemGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
@@ -35,8 +36,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- 只有这一个 proto:只包含背包导出所需的最小 message 子集 -->
+    <!-- 全量协议由 tools/WavesProtocolGenerator 从固定源码基线生成。 -->
     <Protobuf Include="Protocol\WavesGameData.proto" GrpcServices="None" />
+    <EmbeddedResource Include="Protocol/waves-protocol.schema.json" LogicalName="Haiyu.WavesProtocolSchema" />
   </ItemGroup>
 
   <ItemGroup>

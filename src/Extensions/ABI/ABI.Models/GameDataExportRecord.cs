@@ -28,6 +28,9 @@ public enum GameDataExportScope
     /// <summary>背包：普通道具 / 武器 / 声骸 / 限时道具</summary>
     Inventory = 1 << 0,
 
+    /// <summary>全部服务端消息事件；可与背包快照同时导出。</summary>
+    AllServerMessages = 1 << 1,
+
     // 预留（首版不实现）
     // Gacha  = 1 << 1,
     // Player = 1 << 2,
@@ -63,7 +66,8 @@ public sealed partial record GameDataExportProgress(
     [property: JsonPropertyName("playerId")] int PlayerId = 0,
     [property: JsonPropertyName("outputJsonPath")] string? OutputJsonPath = null,
     [property: JsonPropertyName("updateCount")] int UpdateCount = 0,
-    [property: JsonPropertyName("sessionKeyAcquired")] bool SessionKeyAcquired = false
+    [property: JsonPropertyName("sessionKeyAcquired")] bool SessionKeyAcquired = false,
+    [property: JsonPropertyName("eventExport")] GameDataExportEventStats? EventExport = null
 );
 
 #endregion
@@ -86,8 +90,34 @@ public sealed partial record GameDataExportResult(
     // ── v2 持续监控新增（尾部追加，两端同包部署无兼容负担）──
     [property: JsonPropertyName("playerId")] int PlayerId = 0,
     [property: JsonPropertyName("updateCount")] int UpdateCount = 0,
-    [property: JsonPropertyName("playerSummaries")] GameDataExportPlayerSummary[]? PlayerSummaries = null
+    [property: JsonPropertyName("playerSummaries")] GameDataExportPlayerSummary[]? PlayerSummaries = null,
+    [property: JsonPropertyName("eventExport")] GameDataExportEventStats? EventExport = null
 );
+
+/// <summary>事件写入的聚合状态；不会通过 UI 管道发送消息正文。</summary>
+[MemoryPackable]
+public sealed partial record GameDataExportEventStats(
+    [property: JsonPropertyName("captureId")] string CaptureId,
+    [property: JsonPropertyName("manifestPath")] string ManifestPath,
+    [property: JsonPropertyName("received")] long Received,
+    [property: JsonPropertyName("written")] long Written,
+    [property: JsonPropertyName("decoded")] long Decoded,
+    [property: JsonPropertyName("unknown")] long Unknown,
+    [property: JsonPropertyName("failed")] long Failed,
+    [property: JsonPropertyName("unresolved")] long Unresolved,
+    [property: JsonPropertyName("dropped")] long Dropped,
+    [property: JsonPropertyName("bytesWritten")] long BytesWritten,
+    [property: JsonPropertyName("complete")] bool Complete,
+    [property: JsonPropertyName("error")] string? Error,
+    [property: JsonPropertyName("players")] GameDataExportPlayerEventStats[] Players);
+
+[MemoryPackable]
+public sealed partial record GameDataExportPlayerEventStats(
+    [property: JsonPropertyName("playerId")] int PlayerId,
+    [property: JsonPropertyName("written")] long Written,
+    [property: JsonPropertyName("decoded")] long Decoded,
+    [property: JsonPropertyName("unknown")] long Unknown,
+    [property: JsonPropertyName("failed")] long Failed);
 
 /// <summary>本次捕获中单个玩家最近一次成功导出的摘要，不保留额外背包或会话密钥副本。</summary>
 [MemoryPackable]

@@ -12,6 +12,7 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
         internal readonly TaskCompletionSource<bool> Ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal Task<GameDataExportResult> Task = null!;
         internal bool Active = true;
+        internal GameDataExportScope Scope;
         internal long? KeyWaitStartedAt;
         internal bool SessionKeyAcquired;
         internal string? StopReason;
@@ -19,7 +20,7 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
     }
 
     private readonly object _gate = new();
-    private readonly Func<IProgress<IPrivilegedProgress<GameDataExportProgress>>, CancellationToken, Task<GameDataExportResult>> _invoke;
+    private readonly Func<GameDataExportScope, IProgress<IPrivilegedProgress<GameDataExportProgress>>, CancellationToken, Task<GameDataExportResult>> _invoke;
     private readonly Func<bool> _isGameRunning;
     private readonly TimeProvider _clock;
     private readonly TimeSpan _keyWaitTimeout;
@@ -38,6 +39,14 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
         Func<bool> isGameRunning, TimeProvider? clock = null,
         TimeSpan? keyWaitTimeout = null, TimeSpan? probeInterval = null,
         TimeSpan? readyTimeout = null, TimeSpan? stopGrace = null)
+        : this((_, progress, token) => invoke(progress, token), isGameRunning, clock,
+            keyWaitTimeout, probeInterval, readyTimeout, stopGrace) { }
+
+    internal GameDataExportLauncher(
+        Func<GameDataExportScope, IProgress<IPrivilegedProgress<GameDataExportProgress>>, CancellationToken, Task<GameDataExportResult>> invoke,
+        Func<bool> isGameRunning, TimeProvider? clock = null,
+        TimeSpan? keyWaitTimeout = null, TimeSpan? probeInterval = null,
+        TimeSpan? readyTimeout = null, TimeSpan? stopGrace = null)
     {
         _invoke = invoke;
         _isGameRunning = isGameRunning;
@@ -51,12 +60,13 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
     public (string Message, int Percentage)? LastProgress { get { lock (_gate) return _lastProgress; } }
     public GameDataExportProgress? LastBusinessProgress { get { lock (_gate) return _lastBusinessProgress; } }
     public GameDataExportResult? LastResult { get { lock (_gate) return _lastResult; } }
+    public GameDataExportScope CurrentScope { get { lock (_gate) return _session?.Scope ?? GameDataExportScope.Inventory; } }
     public bool IsSessionActive { get { lock (_gate) return _session is { Active: true }; } }
     public event Action<string, int>? ProgressChanged;
     public event Action<GameDataExportResult>? SessionEnded;
     public event Action? StateChanged;
 
-    public bool TryStart(out Task<GameDataExportResult> sessionTask)
+    public bool TryStart(out Task<GameDataExportResult> sessionTask, GameDataExportScope scope = GameDataExportScope.Inventory)
     {
         lock (_gate)
         {
@@ -70,7 +80,8 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
             var session = new Session
             {
                 KeyWaitStartedAt = running ? _clock.GetTimestamp() : null,
-                SawGameProcess = running
+                SawGameProcess = running,
+                Scope = scope
             };
             _session = session;
             _lastProgress = null;
@@ -91,7 +102,7 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
         {
             // 同步接收传输回调，避免 Progress<T> 的线程池排队让就绪信号晚于结果。
             var progress = new InlineProgress(p => OnProgress(session, p));
-            result = await _invoke(progress, session.Stop.Token).ConfigureAwait(false);
+            result = await _invoke(session.Scope, progress, session.Stop.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

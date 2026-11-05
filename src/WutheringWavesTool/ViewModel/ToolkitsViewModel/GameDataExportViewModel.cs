@@ -50,10 +50,13 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
     private void SynchronizeSession()
     {
         IsExporting = _launcher.IsSessionActive;
+        if (IsExporting) ExportAllServerMessages = _launcher.CurrentScope.HasFlag(GameDataExportScope.AllServerMessages);
         if (_launcher.LastProgress is { } progress)
         {
             var business = _launcher.LastBusinessProgress;
-            ProgressMessage = business is { Stage: GameDataExportStage.Monitoring, OutputJsonPath: not null }
+            ProgressMessage = business?.EventExport is { } stats
+                ? progress.Message + "\n" + FormatEventStats(stats)
+                : business is { Stage: GameDataExportStage.Monitoring, OutputJsonPath: not null }
                 ? $"监控中：玩家 {business.PlayerId}，已更新 {business.UpdateCount} 次\n最新文件：{business.OutputJsonPath}"
                 : progress.Message;
             ProgressValue = progress.Percentage;
@@ -68,8 +71,23 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
         ResultMessage = HasResult ? FormatResult(result!) : string.Empty;
     }
 
+    private static string FormatEventStats(GameDataExportEventStats stats) => string.Format(
+        LanguageService.GetString("Toolkit_GameDataExportEventStats"), stats.Received, stats.Written,
+        stats.Decoded, stats.Unknown, stats.Failed, stats.Unresolved, stats.ManifestPath);
+
     private static string FormatResult(GameDataExportResult result)
     {
+        if (result.EventExport is { } events)
+        {
+            var message = result.Message + "\n" + FormatEventStats(events);
+            foreach (var player in events.Players)
+                message += "\n" + string.Format(LanguageService.GetString("Toolkit_GameDataExportPlayerEvents"),
+                    player.PlayerId, player.Written, player.Decoded, player.Unknown, player.Failed);
+            if (result.PlayerSummaries is { Length: > 0 })
+                message += "\n\n" + LanguageService.GetString("Toolkit_GameDataExportInventorySummaryTitle")
+                    + "\n" + FormatResult(result with { EventExport = null });
+            return message;
+        }
         if (result.PlayerSummaries is { Length: > 0 } summaries)
         {
             var heading = result.Success
@@ -99,6 +117,7 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ImportKeyCommand))]
+    [NotifyPropertyChangedFor(nameof(CanChooseExportMode))]
     public partial bool IsExporting { get; private set; }
 
     [ObservableProperty]
@@ -114,12 +133,17 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
     public partial bool HasResult { get; private set; }
 
     [ObservableProperty]
+    public partial bool ExportAllServerMessages { get; set; }
+
+    [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ImportKeyCommand))]
     [NotifyCanExecuteChangedFor(nameof(StartExportCommand))]
     public partial bool IsImportingKey { get; private set; }
 
     [ObservableProperty]
     public partial string KeyImportMessage { get; private set; } = string.Empty;
+
+    public bool CanChooseExportMode => !IsExporting;
 
     private bool CanImportKey() => !IsDisposed && !IsExporting && !IsImportingKey;
     private bool CanStartExport() => !IsDisposed && !IsImportingKey;
@@ -168,7 +192,9 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
             return;
         try
         {
-            _launcher.TryStart(out _);
+            var scope = GameDataExportScope.Inventory;
+            if (ExportAllServerMessages) scope |= GameDataExportScope.AllServerMessages;
+            _launcher.TryStart(out _, scope);
             SynchronizeSession();
         }
         catch (Exception ex)

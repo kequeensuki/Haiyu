@@ -51,6 +51,8 @@ namespace Haiyu.Services
     {
         public static string GetString(string key) => key switch
         {
+            "Toolkit_GameDataExportEventStats" => "接收 {0}，写入 {1}，解析 {2}，未知 {3}，未解析 {4}，待归属 {5}\n{6}",
+            "Toolkit_GameDataExportPlayerEvents" => "玩家 {0}：写入 {1}，解析 {2}，未知 {3}，未解析 {4}",
             "Toolkit_GameDataExportSummaryDone" => "本次捕获已结束，共导出 {0} 个玩家。",
             "Toolkit_GameDataExportPlayerSummary" => "玩家 {0}（已更新 {1} 次）\n普通道具 {2}、武器 {3}、声骸 {4}、限时道具 {5}\n{6}",
             _ => key

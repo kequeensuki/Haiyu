@@ -10,6 +10,15 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
     private readonly HashSet<string> _rawSeen = new();
     private readonly Queue<string> _rawOrder = new();
     internal byte[]? SessionKey => keyLoader.SessionKey;
+    internal string EventSessionId { get; private set; } = Guid.NewGuid().ToString("N");
+    internal uint ConnectionId { get; set; }
+    internal Func<InventoryCaptureState, GatewayFrame, byte[]?, string?, bool>? FrameObserved { get; set; }
+    internal Action<string, int>? IdentityObserved { get; set; }
+    internal Action<InventoryCaptureState, byte[], string>? FrameRejected { get; set; }
+    private bool _eventIdentityPending;
+    private bool _awaitingLoginAck = true;
+    internal int? EventPlayerId => !_eventIdentityPending && PlayerId.Current == PlayerIdResolver.Phase.Resolved ? PlayerId.PlayerId : null;
+
     internal bool HasVerifiedTraffic { get; private set; }
     internal int VerifiedFrames { get; private set; }
     internal int IdentityVersion { get; private set; }
@@ -24,7 +33,7 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
     internal int Version { get; private set; }
     internal string? Diagnostic { get; private set; }
     internal int ParsedCategories => NormalItems.Count + Weapons.Count + Phantoms.Count + ValidTimeItems.Count;
-    internal bool Ready => HasVerifiedTraffic && PlayerId.Current == PlayerIdResolver.Phase.Resolved
+    internal bool Ready => (FrameObserved is null || !_eventIdentityPending) && HasVerifiedTraffic && PlayerId.Current == PlayerIdResolver.Phase.Resolved
         && ParsedCategories == MsgIdFilter.GetTargetMsgIds(scope).Length && DecodedFrames > 0;
 
     internal void Consume(KcpStreamRebuilder stream)
@@ -46,7 +55,8 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
                 if (frame.MsgId == MsgIdFilter.ProtoKeyResponse)
                 {
                     var generation = keyLoader.Generation;
-                    if (!keyLoader.TryResolve(frame))
+                    var resolved = keyLoader.TryResolve(frame);
+                    if (!resolved)
                         Diagnostic = "新会话密钥解析失败，保留之前的密钥和已导出文件。";
                     else
                     {
@@ -55,24 +65,57 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
                         if (keyLoader.Generation != generation)
                         {
                             IdentityVersion++;
+                            EventSessionId = Guid.NewGuid().ToString("N");
+                            _eventIdentityPending = true;
+                            _awaitingLoginAck = true;
                             ClearSnapshots();
                             PlayerId.NotifyRelogin();
                             Diagnostic = "已取得新会话密钥，等待玩家身份及完整背包。";
                         }
                     }
+                    FrameObserved?.Invoke(this, frame, frame.Payload, resolved ? null : "key_resolution_failed");
+                    continue;
+                }
+                if (FrameObserved is not null && keyLoader.SessionKey is null)
+                {
+                    FrameObserved(this, frame, null, "key_unavailable");
                     continue;
                 }
                 if (keyLoader.SessionKey is null)
                     return before; // 不清理尚未能解密的完整帧。
                 PlayerId.NotifyKeyResolved();
-                var plain = FrameCipher.Decrypt(frame, keyLoader.SessionKey);
+                byte[] plain;
+                if (FrameObserved is not null)
+                {
+                    if (!FrameCipher.TryDecrypt(frame, keyLoader.SessionKey, out var decoded, out var status))
+                    { FrameObserved(this, frame, null, status); continue; }
+                    plain = decoded!;
+                }
+                else plain = FrameCipher.Decrypt(frame, keyLoader.SessionKey);
+                // LoginResponse 标志新的登录尝试；即使复用密钥，也不把早期消息归给旧玩家。
+                if (FrameObserved is not null && frame.MsgId == MsgIdFilter.LoginResponse)
+                {
+                    // raw 推送与 KCP 响应可能交错；首次登录确认不能清掉已经先到的 BasicInfo。
+                    if (!_awaitingLoginAck && PlayerId.Current == PlayerIdResolver.Phase.Resolved)
+                    {
+                        if (!_eventIdentityPending) EventSessionId = Guid.NewGuid().ToString("N");
+                        _eventIdentityPending = true;
+                        ClearSnapshots();
+                        PlayerId.NotifyRelogin();
+                        IdentityVersion++;
+                    }
+                    _awaitingLoginAck = false;
+                }
                 if (frame.MsgId == MsgIdFilter.BasicInfoNotify)
                 {
                     // GatewayFrame.Payload 是密文，状态机只接收解密/解压后的 protobuf。
                     var previousId = PlayerId.PlayerId;
                     var previouslyResolved = PlayerId.Current == PlayerIdResolver.Phase.Resolved;
                     if (!PlayerId.TryFeed(frame with { Payload = plain }))
+                    {
+                        FrameObserved?.Invoke(this, frame, plain, "identity_failed");
                         throw new InvalidDataException(PlayerId.FailureReason);
+                    }
                     if (PlayerId.Current == PlayerIdResolver.Phase.Resolved)
                     {
                         HasVerifiedTraffic = true;
@@ -82,9 +125,30 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
                     {
                         if (previousId > 0 && previouslyResolved)
                             ClearSnapshots();
+                        if (previouslyResolved)
+                        {
+                            _awaitingLoginAck = true;
+                            if (!_eventIdentityPending) EventSessionId = Guid.NewGuid().ToString("N");
+                        }
                         IdentityVersion++;
                         Diagnostic = $"已切换至玩家 {PlayerId.PlayerId}，等待完整背包。";
                     }
+                }
+                if (frame.MsgId == MsgIdFilter.BasicInfoNotify && PlayerId.Current == PlayerIdResolver.Phase.Resolved)
+                    _eventIdentityPending = false;
+                if (EventPlayerId is { } player) IdentityObserved?.Invoke(EventSessionId, player);
+                var protocolVerified = FrameObserved?.Invoke(this, frame, plain, null) == true;
+                if (protocolVerified && !MsgIdFilter.IsTarget(frame.MsgId, scope) && frame.MsgId != MsgIdFilter.BasicInfoNotify)
+                {
+                    HasVerifiedTraffic = true;
+                    VerifiedFrames++;
+                }
+                if (FrameObserved is not null && frame.MsgId == MsgIdFilter.LogoutNotify)
+                {
+                    EventSessionId = Guid.NewGuid().ToString("N");
+                    _eventIdentityPending = true;
+                    _awaitingLoginAck = true;
+                    ClearSnapshots();
                 }
                 if (!MsgIdFilter.IsTarget(frame.MsgId, scope))
                     continue;
@@ -101,6 +165,7 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
                         parsed = Store(ValidTimeItems, frame.MsgId, InventoryMapper.MapValidTimeItems(plain)); break;
                     default: parsed = false; break;
                 }
+                if (!parsed && FrameObserved is not null) continue;
                 if (!parsed)
                     throw new InvalidDataException($"背包消息 {frame.MsgId} 解密或 protobuf 解析失败，未更新导出文件。");
                 HasVerifiedTraffic = true;
@@ -109,6 +174,8 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
                 DecodedOnConnection++;
                 Version++;
             }
+            else if (offset > before)
+                FrameRejected?.Invoke(this, bytes.AsSpan(before, offset - before).ToArray(), "invalid_frame");
             else if (offset == before)
                 break; // 半帧：保留在流中，下次补齐后再消费。
         }
@@ -124,7 +191,8 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
         _rawOrder.Enqueue(fingerprint);
         if (_rawOrder.Count > 256)
             _rawSeen.Remove(_rawOrder.Dequeue());
-        Consume(bytes);
+        var consumed = Consume(bytes);
+        if (consumed < bytes.Length) FrameRejected?.Invoke(this, bytes.AsSpan(consumed).ToArray(), "incomplete_raw_frame");
     }
 
     internal InventoryCaptureState ForkForReconnect()
@@ -134,7 +202,13 @@ internal sealed class InventoryCaptureState(SessionKeyLoader keyLoader, GameData
         {
             DecodedFrames = DecodedFrames,
             Version = Version,
-            IdentityVersion = IdentityVersion
+            IdentityVersion = IdentityVersion,
+            EventSessionId = EventSessionId,
+            _eventIdentityPending = _eventIdentityPending,
+            _awaitingLoginAck = _awaitingLoginAck,
+            FrameObserved = FrameObserved,
+            IdentityObserved = IdentityObserved,
+            FrameRejected = FrameRejected
         };
         next.PlayerId.RestoreFrom(PlayerId);
         foreach (var pair in NormalItems) next.NormalItems[pair.Key] = pair.Value.ToList();

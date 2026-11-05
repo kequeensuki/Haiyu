@@ -6,6 +6,7 @@ using Haiyu.ABI.Protocol;
 using Haiyu.ABI.Services.GameDataExport;
 using Haiyu.ABI.Services.GameDataExport.Capture;
 using Haiyu.ABI.Services.GameDataExport.Export;
+using Haiyu.ABI.Services.GameDataExport.Events;
 
 namespace ABIRuntime.TransportTests;
 
@@ -92,18 +93,30 @@ internal static partial class Program
                         timeout.CancelAfter(TimeSpan.FromMilliseconds(2400));
                     }
                     return path;
-                });
-            var result = await service.ExecuteAsync(new(GameDataExportScope.Inventory),
+                }, () => new EventExportSession(root));
+            var result = await service.ExecuteAsync(new(GameDataExportScope.Inventory | GameDataExportScope.AllServerMessages),
                 new InlineProgress<GameDataExportProgress>(reports.Add), timeout.Token);
             if (failSecond)
             {
                 Equal(false, result.Success);
+                Equal(false, result.EventExport!.Complete);
+                Equal(true, File.Exists(result.EventExport.ManifestPath));
                 Equal(1, result.PlayerSummaries!.Length);
                 Equal(111111, result.PlayerSummaries[0].PlayerId);
                 Equal(true, File.Exists(result.PlayerSummaries[0].OutputJsonPath));
                 return;
             }
             Equal(true, result.Success);
+            Equal(true, result.EventExport!.Complete);
+            Equal(result.EventExport.Received, result.EventExport.Written);
+            Equal(0L, result.EventExport.Unresolved);
+            Equal(2, result.EventExport.Players.Length);
+            using (var manifest = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(result.EventExport.ManifestPath)))
+            {
+                Equal("completed", manifest.RootElement.GetProperty("state").GetString());
+                Equal(switchBack ? 3 : 2, manifest.RootElement.GetProperty("sessionBindings").EnumerateObject().Count());
+                Equal(true, manifest.RootElement.GetProperty("files").GetArrayLength() >= 3);
+            }
             Equal(switchBack ? 3 : 2, writes);
             Equal(2, result.PlayerSummaries!.Length);
             var first = result.PlayerSummaries.Single(s => s.PlayerId == 111111);

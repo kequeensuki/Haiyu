@@ -1,0 +1,21 @@
+{
+  "generatorVersion": 1,
+  "sourceCommit": "48026711997617dbe86f266c948573efcae94c87",
+  "sourceHash": "96da6f8f05e1a8721b2bc573a00383e1bf587333fdaa3914fee24e100796a597",
+  "messageCount": 5481,
+  "enumCount": 333,
+  "fieldCount": 13406,
+  "registeredCount": 3910,
+  "syntheticEnumZeros": [
+    "Aki.Protocol.ECombatNotifyDataMessage",
+    "Aki.Protocol.ECombatPushDataMessage",
+    "Aki.Protocol.ECombatRequestDataMessage",
+    "Aki.Protocol.ENotifyMessageId",
+    "Aki.Protocol.EProtoConfigMask",
+    "Aki.Protocol.EPushMessageId",
+    "Aki.Protocol.ERequestMessageId",
+    "Aki.Protocol.EResponseMessageId"
+  ],
+  "schemaSha256": "78e121c2181d12536f66230fa70cb3bd22daba2582d5f3a81f40b8b78642882b",
+  "protoSha256": "3c26f9acf8b27416a135c477f0e4c507792d3f8989cbc52742c0b09121986221"
+}

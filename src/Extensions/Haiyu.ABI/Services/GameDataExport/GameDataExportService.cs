@@ -1,3 +1,4 @@
+using Haiyu.ABI.Services.GameDataExport.Events;
 using System.Runtime.Versioning;
 using ABI.Models;
 using ABIRuntime.Abstractions;
@@ -53,15 +54,17 @@ public sealed class GameDataExportService
     /// </summary>
     private readonly SessionKeyLoader _keyLoader = new();
     private readonly Func<IUdpCapture> _createCapture;
+    private readonly Func<EventExportSession> _createEvents;
     private readonly Action<SessionKeyLoader> _loadKey;
     private readonly Func<GameDataExportResult, DateTimeOffset, string?> _write;
 
     public GameDataExportService() : this(() => new MultiInterfaceUdpCapture(), LoadPrivateKey, InventoryJsonWriter.TryWrite) { }
 
     internal GameDataExportService(Func<IUdpCapture> createCapture, Action<SessionKeyLoader> loadKey,
-        Func<GameDataExportResult, DateTimeOffset, string?> write)
+        Func<GameDataExportResult, DateTimeOffset, string?> write, Func<EventExportSession>? createEvents = null)
     {
         _createCapture = createCapture;
+        _createEvents = createEvents ?? (() => new EventExportSession(GameDataExportPaths.OutputDirectory));
         _loadKey = loadKey;
         _write = write;
     }
@@ -80,6 +83,7 @@ public sealed class GameDataExportService
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(progress);
         using var capture = _createCapture();
+        EventExportSession? events = null;
         var sessionStart = DateTimeOffset.Now;
         var captured = 0;
         var decodedTotal = 0;
@@ -108,8 +112,27 @@ public sealed class GameDataExportService
                 result.Inventory.Phantoms.Count, result.Inventory.ValidTimeItems.Count, result.OutputJsonPath);
         }
 
-        GameDataExportResult Complete(GameDataExportResult result) =>
-            result with { PlayerSummaries = summariesByPlayer.Values.OrderBy(s => s.PlayerId).ToArray() };
+        async Task<GameDataExportResult> CompleteAsync(GameDataExportResult result, bool failed = false)
+        {
+            capture.Stop();
+            var pending = events is not null && streams.Any(p => p.Value.SegmentCount > 0
+                && states.TryGetValue(p.Key, out var state) && state.HasVerifiedTraffic);
+            var eventStats = events is null ? null : await events.FinishAsync(failed ? result.Message
+                : pending ? "停止时仍有未完成的 KCP 重组数据，捕获可能不完整。" : null).ConfigureAwait(false);
+            if (eventStats is not null)
+            {
+                if (eventStats.Error is not null) result = result with { Success = false, Message = eventStats.Error };
+                else if (eventStats.Written > 0) result = result with { Success = true, Message = "消息事件导出已结束。" };
+            }
+            return result with { PlayerSummaries = summariesByPlayer.Values.OrderBy(s => s.PlayerId).ToArray(), EventExport = eventStats };
+        }
+
+        bool ObserveFrame(InventoryCaptureState state, GatewayFrame frame, byte[]? plain, string? status)
+        {
+            int? player = status == "key_resolution_failed" ? null : state.EventPlayerId;
+            var session = status == "key_resolution_failed" ? state.EventSessionId + "-unverified-" + frame.SeqNo : state.EventSessionId;
+            return events!.Publish(frame, plain, player, session, state.ConnectionId, status, state.HasVerifiedTraffic);
+        }
 
         void RemoveConnection(uint conv)
         {
@@ -168,12 +191,18 @@ public sealed class GameDataExportService
         }
         try
         {
+            if (request.Scope.HasFlag(GameDataExportScope.AllServerMessages))
+            {
+                events = _createEvents();
+                progress = new EventProgress(progress, events);
+            }
             Report(progress, GameDataExportStage.Capturing, 0, "正在准备网卡");
             _loadKey(_keyLoader);
             capture.Start();
             Report(progress, GameDataExportStage.Capturing, 5, "正在等待游戏连接", captureReady: true);
             while (!cancellationToken.IsCancellationRequested)
             {
+                events?.ThrowIfFailed();
                 foreach (var pair in streams.ToArray())
                 {
                     try { pair.Value.ValidatePending(); }
@@ -208,6 +237,15 @@ public sealed class GameDataExportService
                                     states[connection.Conv] = new InventoryCaptureState(_keyLoader.CreateSession(), request.Scope);
                                     sessionFamilies[connection.Conv] = connection.Conv;
                                 }
+                            }
+                            var eventState = states[connection.Conv];
+                            eventState.ConnectionId = connection.Conv;
+                            if (events is not null)
+                            {
+                                eventState.FrameObserved = ObserveFrame;
+                                eventState.IdentityObserved = events.Bind;
+                                eventState.FrameRejected = (state, bytes, status) => ObserveFrame(state,
+                                    new GatewayFrame(GatewayMessageType.Invalid, 0, 0, 0, 0, 0, bytes), null, status);
                             }
                             // 重连可改变本地地址/端口，但不会因此清除密钥及玩家信息。
                             connections[connection.Conv] = connection;
@@ -295,6 +333,14 @@ public sealed class GameDataExportService
                 if (Environment.TickCount64 - lastReport >= 2000)
                 {
                     lastReport = Environment.TickCount64;
+                    if (events is not null)
+                    {
+                        events.Checkpoint();
+                        var stats = events.Snapshot();
+                        progress.Report(new(GameDataExportStage.Monitoring, 100,
+                            $"消息导出中：已接收 {stats.Received}，已写入 {stats.Written}，解析成功 {stats.Decoded}，未知协议 {stats.Unknown}，未解析 {stats.Failed}。",
+                            EventExport: stats));
+                    }
                     var current = lastVerifiedConnection is { } id && states.TryGetValue(id, out var active)
                         ? active : states.Values.OrderByDescending(s => s.ParsedCategories).FirstOrDefault();
                     if (current is { Ready: true } && lastResult is { Success: true }
@@ -335,12 +381,12 @@ public sealed class GameDataExportService
                         RememberExport(lastResult);
                 }
             }
-            return Complete(lastResult ?? Failure("监控已停止，尚未取得完整背包及玩家身份信息，未生成导出文件。", captured, decodedTotal, null));
+            return await CompleteAsync(lastResult ?? Failure("监控已停止，尚未取得完整背包及玩家身份信息，未生成导出文件。", captured, decodedTotal, null)).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             Report(progress, GameDataExportStage.Failed, 100, ex.Message);
-            return Complete(Failure(ex.Message, captured, decodedTotal, null));
+            return await CompleteAsync(Failure(ex.Message, captured, decodedTotal, null), failed: true).ConfigureAwait(false);
         }
         finally
         {
@@ -442,6 +488,12 @@ public sealed class GameDataExportService
         string? sessionKeyHex
     ) =>
         new(false, message, null, null, captured, decoded, sessionKeyHex);
+
+    private sealed class EventProgress(IProgress<GameDataExportProgress> inner, EventExportSession events)
+        : IProgress<GameDataExportProgress>
+    {
+        public void Report(GameDataExportProgress value) => inner.Report(value with { EventExport = events.Snapshot() });
+    }
 
     private static void Report(
         IProgress<GameDataExportProgress> progress,

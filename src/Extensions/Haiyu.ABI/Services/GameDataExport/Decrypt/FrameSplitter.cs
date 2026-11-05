@@ -1,3 +1,4 @@
+using Haiyu.ABI.Protocol;
 using System.Buffers.Binary;
 
 namespace Haiyu.ABI.Services.GameDataExport.Decrypt;
@@ -5,6 +6,8 @@ namespace Haiyu.ABI.Services.GameDataExport.Decrypt;
 /// <summary>消息类型（取自帧首字节低 4 位）。</summary>
 public enum GatewayMessageType : byte
 {
+    /// <summary>仅用于完整性诊断，不能当作实际网关消息类型。</summary>
+    Invalid = 0,
     Request = 1,
     Response = 2,
     Exception = 3,
@@ -30,7 +33,7 @@ public sealed record GatewayFrame(
     public bool IsCompressed => (RawType & 0x10) != 0;
 
     /// <summary>该 msgId 是否走明文（111 ProtoKeyRequest / 112 ProtoKeyResponse）。</summary>
-    public bool IsPlaintext => MsgId is 111 or 112;
+    public bool IsPlaintext => MsgId is WavesMessageIds.ProtoKeyRequest or WavesMessageIds.ProtoKeyResponse;
 }
 
 /// <summary>

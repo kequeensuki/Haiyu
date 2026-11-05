@@ -29,6 +29,8 @@ internal static partial class Program
             ("64 MiB 分帧与双向完整性", TestLargeMessagesAsync),
             ("并发独立请求管道", TestConcurrentPipesAsync),
             ("请求 ID 关联取消", TestCancellationMessageAsync),
+            ("全量协议：独立 wire 编码/oneof/map/未知/损坏载荷", TestFullProtocolAsync),
+            ("事件写入：分片/待归属绑定/限额/完整性", TestEventFilesAsync),
             ("KCP 流水位/增量/Compact 语义", TestKcpStreamWatermarkAsync),
             ("导出单消费者：加密/半帧/回收/playerId/持续更新", TestInventoryCaptureAsync),
             ("playerId 状态机：提取/重试/Id=0/超时/重登", TestPlayerIdResolverAsync),
@@ -47,7 +49,7 @@ internal static partial class Program
         };
 
         if (args.Contains("--game-data-export"))
-            tests = tests.Where(t => t.Run == TestKcpStreamWatermarkAsync
+            tests = tests.Where(t => t.Run == TestFullProtocolAsync || t.Run == TestEventFilesAsync || t.Run == TestKcpStreamWatermarkAsync
                 || t.Run == TestInventoryCaptureAsync || t.Run == TestPlayerIdResolverAsync
                 || t.Run == TestAtomicWriteAsync || t.Run == TestCaptureLimitsAsync
                 || t.Run == TestExportPersistenceRetryAsync || t.Run == TestExportStopResultAsync

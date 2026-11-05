@@ -9,6 +9,7 @@ var tests = new (string, Func<Task>)[]
 {
     ("PEM 导入校验、持久化与读取兼容", KeyImportTests.BusinessAsync),
     ("导入入口：取消、成功、失败及会话互斥", KeyImportTests.UiAsync),
+    ("全量模式传递及事件进度/结果展示", EventModeAsync),
     ("捕获就绪信号及提前失败", ReadyAsync),
     ("游戏退出事件与外部进程退出停止捕获", GameExitAsync),
     ("取消返回结果、通知一次、会话可重启", StopAsync),
@@ -39,6 +40,37 @@ static GameDataExportLauncher Create(Func<IProgress<IPrivilegedProgress<GameData
 static void Send(IProgress<IPrivilegedProgress<GameDataExportProgress>> p, bool ready = false, bool data = false, bool key = false) =>
     p.Report(new PrivilegedProgress<GameDataExportProgress>(PrivilegedStage.Executing, 0, "业务进度",
         new(GameDataExportStage.Capturing, 5, "正在等待游戏连接", ready, data, SessionKeyAcquired: key)));
+
+static Task EventModeAsync()
+{
+    var previous=SynchronizationContext.Current;var ui=new PumpContext();SynchronizationContext.SetSynchronizationContext(ui);
+    try
+    {
+        GameDataExportScope? selected=null;
+        var done=new TaskCompletionSource<GameDataExportResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stats=new GameDataExportEventStats("capture","capture/manifest.json",12,12,10,1,1,0,0,2048,true,null,
+            [new(123,6,5,1,0),new(456,6,5,0,1)]);
+        using var launcher=new GameDataExportLauncher((scope,p,_)=>
+        {
+            selected=scope;p.Report(new PrivilegedProgress<GameDataExportProgress>(PrivilegedStage.Executing,100,"消息导出中",
+                new(GameDataExportStage.Monitoring,100,"消息导出中",EventExport:stats)));return done.Task;
+        },()=>false);
+        using var services=new ServiceCollection().AddSingleton(launcher).BuildServiceProvider();Instance.Host=new TestHost(services);
+        using var vm=new GameDataExportViewModel(new ViewFactory(),new WindowSession(),new FakeKeyService());
+        vm.ExportAllServerMessages=true;vm.StartExportCommand.Execute(null);
+        Check(SpinWait.SpinUntil(()=>selected.HasValue,TimeSpan.FromSeconds(2)),"没有发起导出");
+        Check(selected!.Value.HasFlag(GameDataExportScope.AllServerMessages) && selected.Value.HasFlag(GameDataExportScope.Inventory),"全量模式未传至业务层");
+        Check(SpinWait.SpinUntil(()=>launcher.LastBusinessProgress?.EventExport!=null,TimeSpan.FromSeconds(2)),"事件进度未到达");ui.Drain();
+        Check(!vm.CanChooseExportMode && vm.ProgressMessage.Contains("12") && vm.ProgressMessage.Contains("manifest.json"),"事件进度或模式锁定不正确");
+        using var reopened=new GameDataExportViewModel(new ViewFactory(),new WindowSession(),new FakeKeyService());
+        Check(reopened.ExportAllServerMessages,"重新打开窗口没有反映正在运行的全量模式");
+        done.SetResult(Result() with{EventExport=stats});
+        Check(SpinWait.SpinUntil(()=>!launcher.IsSessionActive,TimeSpan.FromSeconds(2)),"会话未结束");ui.Drain();
+        Check(vm.HasResult && vm.ResultMessage.Contains("玩家 123") && vm.ResultMessage.Contains("玩家 456") && vm.ResultMessage.Contains("manifest.json"),"事件结束汇总丢失玩家或路径");
+    }
+    finally{SynchronizationContext.SetSynchronizationContext(previous);}
+    return Task.CompletedTask;
+}
 
 static async Task GameExitAsync()
 {
