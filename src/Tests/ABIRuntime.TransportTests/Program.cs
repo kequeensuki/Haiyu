@@ -38,6 +38,7 @@ internal static partial class Program
             ("服务取消后最终结果仍送达", TestExportStopResultAsync),
             ("候选接口：状态/IPv4/GUID 匹配", TestNetworkCandidatesAsync),
             ("多接口捕获：公平轮询/锁定/防抖/错误恢复/释放", TestMultiInterfaceCaptureAsync),
+            ("无密钥 30 分钟后取消服务并释放全部接口", TestKeyTimeoutCleanupAsync),
             ("有线切无线：同连接及新连接保留密钥/玩家/快照", TestNetworkReconnectAsync),
             ("切号后监控状态/路径及旧连接隔离", TestAccountMonitoringAsync),
             ("ComputerMonitorService 实际采样", TestDirectMonitorAsync),
@@ -51,7 +52,8 @@ internal static partial class Program
                 || t.Run == TestAtomicWriteAsync || t.Run == TestCaptureLimitsAsync
                 || t.Run == TestExportPersistenceRetryAsync || t.Run == TestExportStopResultAsync
                 || t.Run == TestNetworkCandidatesAsync || t.Run == TestMultiInterfaceCaptureAsync
-                || t.Run == TestNetworkReconnectAsync || t.Run == TestAccountMonitoringAsync).ToArray();
+                || t.Run == TestNetworkReconnectAsync || t.Run == TestAccountMonitoringAsync
+                || t.Run == TestKeyTimeoutCleanupAsync).ToArray();
 
         if (args.Contains("--transport"))
             tests = tests.Where(t => t.Run == TestDependencyInjectionAsync

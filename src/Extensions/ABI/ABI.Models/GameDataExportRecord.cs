@@ -62,7 +62,8 @@ public sealed partial record GameDataExportProgress(
     [property: JsonPropertyName("hasDataUpdate")] bool HasDataUpdate = false,
     [property: JsonPropertyName("playerId")] int PlayerId = 0,
     [property: JsonPropertyName("outputJsonPath")] string? OutputJsonPath = null,
-    [property: JsonPropertyName("updateCount")] int UpdateCount = 0
+    [property: JsonPropertyName("updateCount")] int UpdateCount = 0,
+    [property: JsonPropertyName("sessionKeyAcquired")] bool SessionKeyAcquired = false
 );
 
 #endregion

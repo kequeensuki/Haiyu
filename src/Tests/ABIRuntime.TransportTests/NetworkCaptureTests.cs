@@ -13,6 +13,54 @@ namespace ABIRuntime.TransportTests;
 
 internal static partial class Program
 {
+    private static async Task TestKeyTimeoutCleanupAsync()
+    {
+        foreach (var handshakeOnly in new[] { false, true })
+        {
+            using var rsa = RSA.Create(2048);
+            var clock = new ExportTestClock();
+            var changes = new TestNetworkChanges();
+            var opened = new List<TestInterfaceCapture>();
+            using var capture = new MultiInterfaceUdpCapture(
+                () => new[] { new CaptureDevice("wired", "wired", "Ethernet"), new CaptureDevice("wifi", "wifi", "WLAN") },
+                d =>
+                {
+                    var c = new TestInterfaceCapture(d.Id, []);
+                    if (handshakeOnly && d.Id == "wired")
+                    {
+                        var bytes = new byte[13]; bytes[0] = 0xEE;
+                        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(1), 123);
+                        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(9), 1000);
+                        c.Packets.Enqueue(new("server", 13108, "client", 45678, bytes, null));
+                    }
+                    opened.Add(c);
+                    return c;
+                }, changes);
+            var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var service = new GameDataExportService(() => capture, loader => loader.LoadPrivateKeyPem(rsa.ExportPkcs8PrivateKeyPem()), (_, _) => throw new Exception("未取得密钥不应导出"));
+            await using var launcher = new Haiyu.Services.GameDataExportLauncher((p, ct) =>
+                service.ExecuteAsync(new(GameDataExportScope.Inventory), new InlineProgress<GameDataExportProgress>(data =>
+                {
+                    p.Report(new ABIRuntime.Abstractions.PrivilegedProgress<GameDataExportProgress>(
+                        ABIRuntime.Abstractions.PrivilegedStage.Executing, data.Percentage, data.Message, data));
+                    if (data.CaptureReady) ready.TrySetResult();
+                }), ct).AsTask(), () => true, clock);
+            launcher.TryStart(out var session);
+            await ready.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            clock.Advance(TimeSpan.FromMinutes(29));
+            await Task.Delay(40);
+            Equal(false, session.IsCompleted);
+            Equal(2, opened.Count);
+            Equal(true, opened.All(c => c.Disposed == 0));
+            clock.Advance(TimeSpan.FromMinutes(1));
+            var result = await session.WaitAsync(TimeSpan.FromSeconds(2));
+            Equal(false, result.Success);
+            Equal(true, result.Message.Contains("会话密钥超时"));
+            Equal(true, opened.All(c => c.Disposed == 1));
+            Equal(0, changes.Subscribers);
+        }
+    }
+
     private static Task TestNetworkCandidatesAsync()
     {
         var ids = Enumerable.Range(0, 6).Select(_ => Guid.NewGuid()).ToArray();

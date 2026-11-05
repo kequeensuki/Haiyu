@@ -12,9 +12,11 @@ dotnet run --project src/Tests/GameDataExport.SessionTests -c Release
 
 第二组验证共享 ABI 管道的依赖注入、序列化、大消息、并发及取消控制帧。
 
-第三组链接生产 Launcher、Windows 启动适配层和 ViewModel 源码。`UiBoundaries.cs` 只替代 Windows 宿主边界、语言查询、ViewModel 基类及 Shell API；不启动真实 WinUI。覆盖就绪/失败/超时、停止终态、会话复用、每会话空转 watcher、游戏运行时保留会话、自动会话窗口接入，以及窗口释放后的弱引用回收。窗口状态通过受控 SynchronizationContext 调度。
+第三组链接生产 Launcher、Windows 启动适配层和 ViewModel 源码。`UiBoundaries.cs` 只替代 Windows 宿主边界、语言查询、ViewModel 基类及 Shell API；不启动真实 WinUI。覆盖就绪/失败/超时、停止终态、会话复用、每会话运行状态 watcher、等待密钥超时及取得密钥后持续监听、自动会话窗口接入，以及窗口释放后的弱引用回收。窗口状态通过受控 SynchronizationContext 调度。
 
-这些检查不代替 Windows 下的 NativeAOT 发布、Npcap 真机抓包和 XAML 验证。部署时须同时更新 UI 和 ABI 包，并重启旧宿主：进度模型尾部新增了显式的 CaptureReady、HasDataUpdate 信号。
+这些检查不代替 Windows 下的 NativeAOT 发布、Npcap 真机抓包和 XAML 验证。部署时须同时更新 UI 和 ABI 包，并重启旧宿主：进度模型尾部新增了显式的 CaptureReady、HasDataUpdate、SessionKeyAcquired 信号。
+
+密钥超时回归使用可推进时钟检查真实 30 分钟边界：未启动游戏不消耗期限；运行中无握手，或有握手但无密钥，到期均停止并释放全部接口及网络事件订阅；成功取得密钥后推进一小时仍继续监听。
 
 ## 本次修复范围
 
@@ -44,7 +46,7 @@ Windows 上仍需验证真实 Npcap 驱动、接口 GUID 对应及非阻塞读�
 ## 游戏退出与切号状态回归
 
 - 启动本地鸣潮时，Launcher 订阅已有 GameEventPublisher 的 GameExit 事件，通知后立即请求收尾。监听属于 Launcher，页面切换不释放它；更换来源和应用退出时退订。
-- 外部启动的游戏由 2 秒进程轮询兜底：开始抓包时尚未启动游戏会继续等待；观察到运行后再退出则停止。30 分钟超时仅作为未启动游戏的等待兜底。
+- 外部启动的游戏由 2 秒进程轮询兜底：开始抓包时尚未启动游戏会继续等待；观察到运行后再退出则停止。检测到游戏启动后开始独立的 30 分钟密钥等待计时；进程存活、普通流量和网卡变化不续期。成功解析密钥后结束该计时，随后持续监听直至退出或手动停止。
 - 返回登录界面不会退出游戏进程，监控继续；文件写入使用 Monitoring 阶段，携带 playerId、输出路径、更新次数，并每 2 秒刷新状态。心跳不计作新的背包数据。
 - 窗口通过 DispatcherQueue 调度，使用最新结构化状态显示账号和路径；旧连接的无关 KCP 包不会切换当前玩家。
 - 测试使用真实游戏事件发布器，以及两次 RSA/AES 登录的完整导出链路；真实 WinUI DispatcherQueue / Npcap 驱动仍需 Windows 实机验证。请同步更新主程序及 ABI 包并重启旧宿主。

@@ -10,8 +10,9 @@ var tests = new (string, Func<Task>)[]
     ("捕获就绪信号及提前失败", ReadyAsync),
     ("游戏退出事件与外部进程退出停止捕获", GameExitAsync),
     ("取消返回结果、通知一次、会话可重启", StopAsync),
-    ("等待提示不刷新空转时钟，每次会话均有 watcher", IdleAsync),
-    ("游戏运行时保留会话，超时停止不开放重叠会话", LifetimeAsync),
+    ("无密钥时等待提示不续期，每次会话均有 watcher", IdleAsync),
+    ("取得密钥后持续监听，停止超时不开放重叠会话", LifetimeAsync),
+    ("密钥期限从游戏启动开始且不被普通流量延长", KeyDeadlineAsync),
     ("打开即接入自动会话，关闭观察窗口可回收且后台继续", WindowAsync),
 };
 var failed = 0;
@@ -31,11 +32,11 @@ static async Task WaitUntil(Func<bool> condition)
 }
 static GameDataExportLauncher Create(Func<IProgress<IPrivilegedProgress<GameDataExportProgress>>, CancellationToken, Task<GameDataExportResult>> run,
     Func<bool>? game = null, TimeSpan? idle = null) => new(run, game ?? (() => false),
-        idleTimeout: idle ?? TimeSpan.FromSeconds(2), probeInterval: TimeSpan.FromMilliseconds(10),
+        keyWaitTimeout: idle ?? TimeSpan.FromSeconds(2), probeInterval: TimeSpan.FromMilliseconds(10),
         readyTimeout: TimeSpan.FromMilliseconds(500), stopGrace: TimeSpan.FromMilliseconds(60));
-static void Send(IProgress<IPrivilegedProgress<GameDataExportProgress>> p, bool ready = false, bool data = false) =>
+static void Send(IProgress<IPrivilegedProgress<GameDataExportProgress>> p, bool ready = false, bool data = false, bool key = false) =>
     p.Report(new PrivilegedProgress<GameDataExportProgress>(PrivilegedStage.Executing, 0, "业务进度",
-        new(GameDataExportStage.Capturing, 5, "正在等待游戏连接", ready, data)));
+        new(GameDataExportStage.Capturing, 5, "正在等待游戏连接", ready, data, SessionKeyAcquired: key)));
 
 static async Task GameExitAsync()
 {
@@ -122,7 +123,7 @@ static async Task IdleAsync()
     {
         try { while (true) { Send(p); await Task.Delay(5, ct); } }
         catch (OperationCanceledException) { return Result(); }
-    }, idle: TimeSpan.FromMilliseconds(90));
+    }, game: () => true, idle: TimeSpan.FromMilliseconds(90));
     launcher.SessionEnded += _ => Interlocked.Increment(ref ended);
     for (var i = 1; i <= 2; i++)
     {
@@ -130,7 +131,7 @@ static async Task IdleAsync()
         await task.WaitAsync(TimeSpan.FromSeconds(2));
         Check(ended == i, "后续会话没有空转监控");
     }
-    // 成功解析的数据会刷新计时，普通等待消息不会。
+    // 取得密钥后即使长期没有背包更新，也不再应用初次密钥期限。
     var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var dataSent = 0;
     var dataGameRunning = true;
@@ -138,6 +139,7 @@ static async Task IdleAsync()
     {
         try
         {
+            Send(p, key: true);
             while (!release.Task.IsCompleted) { Send(p, data: true); dataSent++; await Task.Delay(5, ct); }
             await Task.Delay(Timeout.Infinite, ct);
         }
@@ -146,7 +148,7 @@ static async Task IdleAsync()
     }, game: () => dataGameRunning, idle: TimeSpan.FromMilliseconds(90));
     active.TryStart(out var activeTask);
     await WaitUntil(() => dataSent >= 25);
-    Check(!activeTask.IsCompleted, "新背包数据未刷新时钟");
+    Check(!activeTask.IsCompleted, "已取得密钥却仍被初次密钥期限取消");
     release.SetResult();
     dataGameRunning = false;
     await activeTask.WaitAsync(TimeSpan.FromSeconds(2));
@@ -154,7 +156,7 @@ static async Task IdleAsync()
 static async Task LifetimeAsync()
 {
     var gameRunning = true;
-    await using var launcher = Create(async (_, ct) => { await Task.Delay(Timeout.Infinite, ct); return Result(); },
+    await using var launcher = Create(async (p, ct) => { Send(p, key: true); await Task.Delay(Timeout.Infinite, ct); return Result(); },
         () => gameRunning, TimeSpan.FromMilliseconds(50));
     launcher.TryStart(out var task);
     await Task.Delay(120);
@@ -168,6 +170,43 @@ static async Task LifetimeAsync()
     Check(!stuck.TryStart(out var reused) && ReferenceEquals(pending, reused), "旧服务未退出即启动第二个");
     done.SetResult(Result());
     await pending;
+}
+static async Task KeyDeadlineAsync()
+{
+    var clock = new ExportTestClock();
+    var running = false;
+    IProgress<IPrivilegedProgress<GameDataExportProgress>>? progress = null;
+    await using var launcher = new GameDataExportLauncher(async (p, ct) =>
+    {
+        progress = p;
+        await Task.Delay(Timeout.Infinite, ct);
+        return Result();
+    }, () => running, clock);
+    launcher.TryStart(out var task);
+    await WaitUntil(() => progress is not null);
+    clock.Advance(TimeSpan.FromMinutes(40));
+    await Task.Delay(30);
+    Check(!task.IsCompleted, "游戏尚未启动就开始消耗密钥等待时间");
+    running = true;
+    clock.Advance(TimeSpan.FromSeconds(2));
+    await Task.Delay(30);
+    clock.Advance(TimeSpan.FromMinutes(29));
+    await Task.Delay(30);
+    Check(!task.IsCompleted, "从启动前计时或未满 30 分钟就停止");
+    Send(progress!, ready: true, data: true); // 模拟普通业务进度；不能替代密钥信号。
+    clock.Advance(TimeSpan.FromMinutes(1));
+    var result = await task.WaitAsync(TimeSpan.FromSeconds(2));
+    Check(!result.Success && result.Message.Contains("会话密钥超时"), "进程存活/普通进度延长了密钥期限，或未报告超时原因");
+    progress = null;
+    launcher.TryStart(out var keyedTask);
+    await WaitUntil(() => progress is not null);
+    Send(progress!, key: true);
+    clock.Advance(TimeSpan.FromHours(1));
+    await Task.Delay(30);
+    Check(!keyedTask.IsCompleted, "取得密钥后仍在执行初次密钥超时");
+    running = false;
+    clock.Advance(TimeSpan.FromSeconds(2));
+    await keyedTask.WaitAsync(TimeSpan.FromSeconds(2));
 }
 static Task WindowAsync()
 {

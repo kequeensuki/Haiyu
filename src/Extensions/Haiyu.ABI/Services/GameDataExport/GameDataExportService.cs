@@ -94,6 +94,7 @@ public sealed class GameDataExportService
         var sessionFamilies = new Dictionary<uint, uint>();
         var adaptive = capture as IAdaptiveUdpCapture;
         uint? lastVerifiedConnection = null;
+        var keyReported = false;
         GameDataExportResult? lastResult = null;
 
         void RemoveConnection(uint conv)
@@ -131,6 +132,12 @@ public sealed class GameDataExportService
                 return;
             }
             finally { decodedTotal += state.DecodedOnConnection - decodedBefore; }
+            if (!keyReported && state.SessionKey is not null)
+            {
+                keyReported = true;
+                progress.Report(new(GameDataExportStage.Decrypting, 20, "已取得会话密钥，等待玩家身份及背包数据。",
+                    SessionKeyAcquired: true));
+            }
             if (state.HasVerifiedTraffic && (state.VerifiedFrames != framesBefore || (verifiedBefore && freshKcp?.Invoke() == true)))
             {
                 // 新连接确认后淘汰同一会话的旧传输，防止旧的待写快照覆盖新数据。

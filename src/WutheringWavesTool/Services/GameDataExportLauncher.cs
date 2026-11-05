@@ -12,7 +12,9 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
         internal readonly TaskCompletionSource<bool> Ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal Task<GameDataExportResult> Task = null!;
         internal bool Active = true;
-        internal long LastDataTick;
+        internal long? KeyWaitStartedAt;
+        internal bool SessionKeyAcquired;
+        internal string? StopReason;
         internal bool SawGameProcess;
     }
 
@@ -20,7 +22,7 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
     private readonly Func<IProgress<IPrivilegedProgress<GameDataExportProgress>>, CancellationToken, Task<GameDataExportResult>> _invoke;
     private readonly Func<bool> _isGameRunning;
     private readonly TimeProvider _clock;
-    private readonly TimeSpan _idleTimeout;
+    private readonly TimeSpan _keyWaitTimeout;
     private readonly TimeSpan _probeInterval;
     private readonly TimeSpan _readyTimeout;
     private readonly TimeSpan _stopGrace;
@@ -34,13 +36,13 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
     internal GameDataExportLauncher(
         Func<IProgress<IPrivilegedProgress<GameDataExportProgress>>, CancellationToken, Task<GameDataExportResult>> invoke,
         Func<bool> isGameRunning, TimeProvider? clock = null,
-        TimeSpan? idleTimeout = null, TimeSpan? probeInterval = null,
+        TimeSpan? keyWaitTimeout = null, TimeSpan? probeInterval = null,
         TimeSpan? readyTimeout = null, TimeSpan? stopGrace = null)
     {
         _invoke = invoke;
         _isGameRunning = isGameRunning;
         _clock = clock ?? TimeProvider.System;
-        _idleTimeout = idleTimeout ?? TimeSpan.FromMinutes(30);
+        _keyWaitTimeout = keyWaitTimeout ?? TimeSpan.FromMinutes(30);
         _probeInterval = probeInterval ?? TimeSpan.FromSeconds(2);
         _readyTimeout = readyTimeout ?? TimeSpan.FromSeconds(15);
         _stopGrace = stopGrace ?? TimeSpan.FromSeconds(10);
@@ -64,7 +66,12 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
                 sessionTask = existing.Task;
                 return false;
             }
-            var session = new Session { LastDataTick = _clock.GetTimestamp(), SawGameProcess = _isGameRunning() };
+            var running = _isGameRunning();
+            var session = new Session
+            {
+                KeyWaitStartedAt = running ? _clock.GetTimestamp() : null,
+                SawGameProcess = running
+            };
             _session = session;
             _lastProgress = null;
             _lastResult = null;
@@ -101,6 +108,8 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
         }
         lock (_gate)
         {
+            if (session.StopReason is { } reason)
+                result = result with { Success = false, Message = reason };
             session.Active = false;
             session.Ready.TrySetResult(false);
             if (ReferenceEquals(_session, session))
@@ -124,11 +133,9 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
             if (progress.Data is not null) _lastBusinessProgress = progress.Data;
             if (progress.Data?.CaptureReady == true && !session.Stop.IsCancellationRequested)
                 session.Ready.TrySetResult(true);
-            if (progress.Data?.HasDataUpdate == true)
-            {
-                session.LastDataTick = _clock.GetTimestamp();
-                session.SawGameProcess = true;
-            }
+            // 此信号只在服务成功解析密钥后发送；普通流量与 UI 进度都不续期。
+            if (progress.Data?.SessionKeyAcquired == true)
+                session.SessionKeyAcquired = true;
         }
         ProgressChanged?.Invoke(message, percentage);
     }
@@ -164,11 +171,18 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
                     if (_isGameRunning())
                     {
                         session.SawGameProcess = true;
-                        session.LastDataTick = _clock.GetTimestamp();
+                        session.KeyWaitStartedAt ??= _clock.GetTimestamp();
                     }
-                    else if (session.SawGameProcess || _clock.GetElapsedTime(session.LastDataTick) >= _idleTimeout)
+                    else if (session.SawGameProcess)
                     {
                         // 与手动停止使用同一业务取消通道；本 watcher 无需等待自己结束。
+                        session.Stop.Cancel();
+                        return;
+                    }
+                    if (!session.SessionKeyAcquired && session.KeyWaitStartedAt is { } started
+                        && _clock.GetElapsedTime(started) >= _keyWaitTimeout)
+                    {
+                        session.StopReason = "等待游戏会话密钥超时，已停止流量捕获。";
                         session.Stop.Cancel();
                         return;
                     }

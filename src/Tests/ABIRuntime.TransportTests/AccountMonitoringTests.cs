@@ -85,6 +85,9 @@ internal static partial class Program
                 new InlineProgress<GameDataExportProgress>(reports.Add), timeout.Token);
             Equal(true, result.Success);
             Equal(2, writes);
+            var acquired = reports.Single(p => p.SessionKeyAcquired);
+            var wire = MemoryPack.MemoryPackSerializer.Serialize(acquired);
+            Equal(true, MemoryPack.MemoryPackSerializer.Deserialize<GameDataExportProgress>(wire)!.SessionKeyAcquired);
             var monitoring = reports.Where(p => p.Stage == GameDataExportStage.Monitoring).ToArray();
             Equal(111111, monitoring[0].PlayerId);
             Equal(222222, monitoring[^1].PlayerId);
