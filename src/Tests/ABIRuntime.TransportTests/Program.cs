@@ -3,9 +3,9 @@ using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Text.Json;
 using ABI.Models;
-using ABIRuntime;
 using ABIRuntime.Abstractions;
 using ABIRuntime.Runtime;
+using ABIRuntime;
 using Haiyu.ABI.Services;
 using MemoryPack;
 using Microsoft.Extensions.DependencyInjection;
@@ -29,6 +29,13 @@ internal static partial class Program
             ("64 MiB 分帧与双向完整性", TestLargeMessagesAsync),
             ("并发独立请求管道", TestConcurrentPipesAsync),
             ("请求 ID 关联取消", TestCancellationMessageAsync),
+            ("消费者边界：纯快照与独立连接验证", TestExportConsumerBoundariesAsync),
+            ("登录隔离：复用密钥，两种模式保持一致", TestLoginIsolationAsync),
+            ("帧验证：CRC/压缩/异常控制帧/RSA 尺寸", TestFrameValidationAsync),
+            ("会话解密器：并发与独立密钥", TestParallelDecryptionAsync),
+            ("组合导出：快照失败不被事件成功覆盖", TestExportResultIsolationAsync),
+            ("连接隔离：不同端点复用 conv", TestConnectionEndpointIsolationAsync),
+            ("慢速收尾：真实响应读取超过 5 秒仍返回结果", TestSlowExportDrainAsync),
             ("全量协议：独立 wire 编码/oneof/map/未知/损坏载荷", TestFullProtocolAsync),
             ("事件写入：分片/待归属绑定/限额/完整性", TestEventFilesAsync),
             ("KCP 流水位/增量/Compact 语义", TestKcpStreamWatermarkAsync),
@@ -49,7 +56,9 @@ internal static partial class Program
         };
 
         if (args.Contains("--game-data-export"))
-            tests = tests.Where(t => t.Run == TestFullProtocolAsync || t.Run == TestEventFilesAsync || t.Run == TestKcpStreamWatermarkAsync
+            tests = tests.Where(t => t.Run == TestExportConsumerBoundariesAsync || t.Run == TestLoginIsolationAsync || t.Run == TestFrameValidationAsync
+                || t.Run == TestParallelDecryptionAsync || t.Run == TestExportResultIsolationAsync
+                || t.Run == TestConnectionEndpointIsolationAsync || t.Run == TestSlowExportDrainAsync || t.Run == TestFullProtocolAsync || t.Run == TestEventFilesAsync || t.Run == TestKcpStreamWatermarkAsync
                 || t.Run == TestInventoryCaptureAsync || t.Run == TestPlayerIdResolverAsync
                 || t.Run == TestAtomicWriteAsync || t.Run == TestCaptureLimitsAsync
                 || t.Run == TestExportPersistenceRetryAsync || t.Run == TestExportStopResultAsync
@@ -201,25 +210,25 @@ internal static partial class Program
     /// </summary>
     private static async Task TestPlayerIdResolverAsync()
     {
-        var resolver = new Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver();
+        var resolver = new Haiyu.ABI.Services.GameDataExport.Session.PlayerIdResolver();
 
         Haiyu.ABI.Services.GameDataExport.Decrypt.GatewayFrame MakeFrame(ushort msgId, byte[] payload) =>
             new(Haiyu.ABI.Services.GameDataExport.Decrypt.GatewayMessageType.Push, 4, 0, 0, msgId, 0, payload, 0);
 
         // ── 1) 密钥未解出时不计时（WaitingKey），喂普通帧不动作 ──
         Equal(true, resolver.TryFeed(MakeFrame(999, [1, 2, 3])));
-        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.WaitingKey, resolver.Current);
+        Equal(Haiyu.ABI.Services.GameDataExport.Session.PlayerIdResolver.Phase.WaitingKey, resolver.Current);
 
         // ── 2) 解析失败重试：第一次失败（坏 payload）不终止 ──
         resolver.NotifyKeyResolved();
-        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.WaitingId, resolver.Current);
+        Equal(Haiyu.ABI.Services.GameDataExport.Session.PlayerIdResolver.Phase.WaitingId, resolver.Current);
         Equal(true, resolver.TryFeed(MakeFrame(15380, [0xFF, 0xFF, 0xFF]))); // 非法 protobuf
-        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.WaitingId, resolver.Current);
+        Equal(Haiyu.ABI.Services.GameDataExport.Session.PlayerIdResolver.Phase.WaitingId, resolver.Current);
 
         // ── 3) 合成 BasicInfoNotify{Id=123456} 提取成功 ──
         var good = SerializeBasicInfo(123456);
         Equal(true, resolver.TryFeed(MakeFrame(15380, good)));
-        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.Resolved, resolver.Current);
+        Equal(Haiyu.ABI.Services.GameDataExport.Session.PlayerIdResolver.Phase.Resolved, resolver.Current);
         Equal(123456, resolver.PlayerId);
 
         // ── 4) 60s 超时：WaitingId 阶段才计时；Resolved 后 OnTick 恒 true ──
@@ -228,29 +237,29 @@ internal static partial class Program
 
         // ── 5) 重登重置：回到 WaitingId，旧 id 保留，新 id 到达后更新 ──
         resolver.NotifyRelogin();
-        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.WaitingId, resolver.Current);
+        Equal(Haiyu.ABI.Services.GameDataExport.Session.PlayerIdResolver.Phase.WaitingId, resolver.Current);
         Equal(123456, resolver.PlayerId); // 旧值保留（新 id 解析成功前目录暂用旧值）
 
         var relogin = SerializeBasicInfo(654321);
         Equal(true, resolver.TryFeed(MakeFrame(15380, relogin)));
-        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.Resolved, resolver.Current);
+        Equal(Haiyu.ABI.Services.GameDataExport.Session.PlayerIdResolver.Phase.Resolved, resolver.Current);
         Equal(654321, resolver.PlayerId);
 
         // ── 6) Id=0 两次 → 第 1 次重试（true），第 2 次终止（false）──
-        var resolver2 = new Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver();
+        var resolver2 = new Haiyu.ABI.Services.GameDataExport.Session.PlayerIdResolver();
         resolver2.NotifyKeyResolved();
         var zero = SerializeBasicInfo(0);
         Equal(true, resolver2.TryFeed(MakeFrame(15380, zero)));    // 第 1 次：重试
         Equal(false, resolver2.TryFeed(MakeFrame(15380, zero)));   // 第 2 次：终止
-        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.Failed, resolver2.Current);
+        Equal(Haiyu.ABI.Services.GameDataExport.Session.PlayerIdResolver.Phase.Failed, resolver2.Current);
         Equal(true, resolver2.FailureReason is not null);
 
         // ── 7) 坏帧两次 → 第 1 次重试（true），第 2 次终止（false）──
-        var resolver3 = new Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver();
+        var resolver3 = new Haiyu.ABI.Services.GameDataExport.Session.PlayerIdResolver();
         resolver3.NotifyKeyResolved();
         Equal(true, resolver3.TryFeed(MakeFrame(15380, [0xFF, 0xFF])));
         Equal(false, resolver3.TryFeed(MakeFrame(15380, [0xFF, 0xFF])));
-        Equal(Haiyu.ABI.Services.GameDataExport.Export.PlayerIdResolver.Phase.Failed, resolver3.Current);
+        Equal(Haiyu.ABI.Services.GameDataExport.Session.PlayerIdResolver.Phase.Failed, resolver3.Current);
 
         await Task.CompletedTask;
     }

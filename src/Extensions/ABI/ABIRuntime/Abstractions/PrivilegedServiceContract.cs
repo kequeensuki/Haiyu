@@ -12,6 +12,7 @@ public sealed record PrivilegedServiceContract<
     string Operation,
     JsonTypeInfo<TRequest> RequestType,
     JsonTypeInfo<TProgress> ProgressType,
-    JsonTypeInfo<TResponse> ResponseType
+    JsonTypeInfo<TResponse> ResponseType,
+    bool WaitForCompletionOnCancellation = false
 )
     where TResponse : class;

@@ -19,7 +19,6 @@ namespace Haiyu.ABI.Services.GameDataExport.Decrypt;
 /// </summary>
 public sealed class SessionKeyLoader : IDisposable
 {
-    private const int ExpectedBlobLength = 256;
     private const int ProtoKeyResponseMsgId = 112;
 
     private RSA? _privateKey;
@@ -84,7 +83,7 @@ public sealed class SessionKeyLoader : IDisposable
             return false;
 
         var blob = ExtractKeyBlob(frame.Payload);
-        if (blob is null || blob.Length != ExpectedBlobLength)
+        if (blob is null || blob.Length != _privateKey.KeySize / 8)
             return false;
 
         // 相同 112 重传不能重置正在收集的快照。

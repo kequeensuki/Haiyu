@@ -1,7 +1,7 @@
 using Haiyu.ABI.Protocol;
 using Haiyu.ABI.Services.GameDataExport.Decrypt;
 
-namespace Haiyu.ABI.Services.GameDataExport.Export;
+namespace Haiyu.ABI.Services.GameDataExport.Session;
 
 /// <summary>
 /// playerId 解析状态机（v2 报告 §2.7）。
@@ -95,6 +95,14 @@ public sealed class PlayerIdResolver
         // PlayerId 保留旧值：新的 id 解析成功前，仅供历史展示，新数据必须等 Current=Resolved 才能落盘
     }
 
+    internal void WaitForLogin()
+    {
+        Current = Phase.WaitingKey;
+        _parseFailures = 0;
+        _pendingPayload = null;
+        FailureReason = null;
+    }
+
     /// <summary>
     /// 抓包循环节拍：WaitingId 阶段检查 60s 超时。
     /// </summary>
@@ -123,7 +131,7 @@ public sealed class PlayerIdResolver
         if (Current == Phase.Failed)
             return false;
 
-        if (frame.MsgId != MsgIdFilter.BasicInfoNotify)
+        if (frame.MsgId != WavesMessageIds.BasicInfoNotify)
             return true;
 
         // 半帧拼接：上次疑似失败的载荷与本次相同长度时合并重试——

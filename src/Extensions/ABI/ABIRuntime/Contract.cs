@@ -1,6 +1,6 @@
-using System;
 using System.Collections.Generic;
 using System.Text;
+using System;
 using ABI.Models;
 using ABIRuntime.Abstractions;
 
@@ -101,6 +101,7 @@ public static class Contract
             "haiyu.gameDataExport.v1",
             ABIJsonContext.Default.GameDataExportRequest,
             ABIJsonContext.Default.GameDataExportProgress,
-            ABIJsonContext.Default.GameDataExportResult
+            ABIJsonContext.Default.GameDataExportResult,
+            WaitForCompletionOnCancellation: true
         );
 }

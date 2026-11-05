@@ -38,7 +38,7 @@ public static class ProtectedDataAccess
         {
             var success = protect
                 ? CryptProtectData(ref plainBlob, null, ref entropyBlob, IntPtr.Zero, IntPtr.Zero, 0, ref outputBlob)
-                : CryptUnprotectData(ref plainBlob, null, ref entropyBlob, IntPtr.Zero, IntPtr.Zero, 0, ref outputBlob);
+                : CryptUnprotectData(ref plainBlob, IntPtr.Zero, ref entropyBlob, IntPtr.Zero, IntPtr.Zero, 0, ref outputBlob);
 
             if (!success)
                 throw new CryptographicException(
@@ -102,7 +102,7 @@ public static class ProtectedDataAccess
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CryptUnprotectData(
         ref CryptoApiBlob dataIn,
-        IntPtr? description,
+        IntPtr description,
         ref CryptoApiBlob entropy,
         IntPtr reserved,
         IntPtr prompt,

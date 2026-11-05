@@ -10,7 +10,7 @@ namespace Haiyu.ABI.Services.GameDataExport.Decrypt;
 /// <b>处理顺序</b>（照 OfflineClient <c>ReplayPcap.ParseFrame</c> /
 /// <c>GatewayClient.HandleFrame</c>，经 IDA 实证）：
 /// <code>
-///   ① CRC 校验（已在切帧阶段完成）
+///   ① 业务帧 CRC 校验
 ///   ② 解密：AES-256-ECB（无 IV） → 去 PKCS#7 → XOR(seqNo)
 ///   ③ 解压：仅压缩帧（type &amp; 0x10），zlib 格式，长度必须等于 origSize
 /// </code>
@@ -30,7 +30,7 @@ namespace Haiyu.ABI.Services.GameDataExport.Decrypt;
 /// 不解压直接喂给 protobuf 必然解析失败。
 /// </para>
 /// </summary>
-public static class FrameCipher
+public sealed class FrameCipher : IDisposable
 {
     private const int BlockSize = 16;
     private const int SessionKeyLength = 32;
@@ -39,83 +39,107 @@ public static class FrameCipher
     /// <summary>解压后大小的合理上限（与 FrameSplitter 的帧头校验一致：64 MB）。</summary>
     private const uint MaxOrigSize = 64 * 1024 * 1024;
 
-    // ★ AES transform 复用（v2 持续监控，P1-A6）：会话密钥不变期间复用同一
-    //   ICryptoTransform（ECB 无 IV、PaddingMode.None，transform 本身无请求间状态，
-    //   每次 TransformFinalBlock 独立）。密钥更换（重登）时由 CacheKey 变化触发重建。
-    private static readonly object TransformGate = new();
-    private static ICryptoTransform? _cachedTransform;
-    private static byte[]? _cachedKey;
+    private readonly object _gate = new();
+    private ICryptoTransform? _transform;
+    private byte[]? _key;
+    private bool _disposed;
 
-    /// <summary>校验会话密钥长度（游戏侧 SetK 只接受恰好 32 字节）。</summary>
     public static bool IsValidSessionKey(byte[]? key) => key is { Length: SessionKeyLength };
 
-    /// <summary>获取（或创建）密钥对应的解密 transform；异常时强制重建。</summary>
-    private static ICryptoTransform GetDecryptor(byte[] sessionKey)
+    private ICryptoTransform GetDecryptor(byte[] sessionKey)
     {
-        lock (TransformGate)
-        {
-            if (_cachedTransform is { } cached
-                && _cachedKey is not null
-                && cached.CanReuseTransform
-                && _cachedKey.AsSpan().SequenceEqual(sessionKey))
-            {
-                return cached;
-            }
-
-            _cachedTransform?.Dispose();
-            using var aes = Aes.Create();
-            aes.Key = sessionKey;
-            aes.Mode = CipherMode.ECB;
-            aes.Padding = PaddingMode.None;
-            _cachedTransform = aes.CreateDecryptor();
-            _cachedKey = (byte[])sessionKey.Clone();
-            return _cachedTransform;
-        }
+        if (_transform is { CanReuseTransform: true } && _key is not null && _key.AsSpan().SequenceEqual(sessionKey))
+            return _transform;
+        ClearTransform();
+        using var aes = Aes.Create();
+        aes.Key = sessionKey;
+        aes.Mode = CipherMode.ECB;
+        aes.Padding = PaddingMode.None;
+        _transform = aes.CreateDecryptor();
+        _key = sessionKey.ToArray();
+        return _transform;
     }
 
-    /// <summary>会话密钥更换时调用（重登衔接），下一帧起重建 transform。</summary>
-    public static void InvalidateCachedTransform()
+    private void ClearTransform()
     {
-        lock (TransformGate)
+        _transform?.Dispose();
+        _transform = null;
+        if (_key is not null) CryptographicOperations.ZeroMemory(_key);
+        _key = null;
+    }
+
+    public void Dispose()
+    {
+        lock (_gate)
         {
-            _cachedTransform?.Dispose();
-            _cachedTransform = null;
-            _cachedKey = null;
+            if (_disposed) return;
+            _disposed = true;
+            ClearTransform();
         }
     }
 
     /// <summary>
     /// 解密并解压一帧的载荷，产出可直接交给 protobuf 的明文。
     ///
-    /// <para>明文 msgId、无密钥、或长度非 16 对齐时跳过解密（视为未加密）。</para>
-    /// <para>解压失败时返回解密后的中间结果（不抛异常，由调用方决定如何处理）。</para>
+    /// <para>校验或解码失败时抛出 InvalidDataException；持续捕获使用 TryDecode 取得结构化状态。</para>
     /// </summary>
     public static byte[] Decrypt(GatewayFrame frame, byte[]? sessionKey)
     {
-        var plain = DecryptRaw(frame, sessionKey);
-
-        // ② 解压（仅压缩帧）
-        if (!frame.IsCompressed || plain.Length == 0)
-            return plain;
-
-        return TryInflate(plain, frame.OrigSize, out var inflated) ? inflated : plain;
+        if (!TryDecrypt(frame, sessionKey, out var plain, out var status))
+            throw new InvalidDataException($"业务帧解码失败：{status}");
+        return plain!;
     }
 
-    /// <summary>通用事件路径严格区分密文、解密失败和解压失败，禁止把中间字节当 protobuf。</summary>
+    /// <summary>一次性解码入口；持续捕获复用会话自己的实例。</summary>
     internal static bool TryDecrypt(GatewayFrame frame, byte[]? key, out byte[]? plain, out string? status)
     {
-        plain=null;status=null;
-        if(!frame.IsPlaintext && !IsValidSessionKey(key)){status="key_unavailable";return false;}
-        var decrypted=DecryptRaw(frame,key);
-        if(!frame.IsPlaintext && frame.Payload.Length>0 && frame.Payload.Length % BlockSize == 0 && ReferenceEquals(decrypted,frame.Payload))
-        {status="decrypt_failed";return false;}
-        if(frame.IsCompressed && !TryInflate(decrypted,frame.OrigSize,out decrypted))
-        {status="decompress_failed";return false;}
-        plain=decrypted;return true;
+        using var cipher = new FrameCipher();
+        return cipher.TryDecode(frame, key, out plain, out status);
+    }
+
+    internal bool TryDecode(GatewayFrame frame, byte[]? key, out byte[]? plain, out string? status)
+    {
+        plain = null;
+        status = null;
+        if (!FrameIntegrity.IsValid(frame))
+        {
+            status = "crc_failed";
+            return false;
+        }
+        if (frame.Type == GatewayMessageType.Exception)
+        {
+            plain = frame.Payload;
+            return true;
+        }
+        if (!frame.IsPlaintext && !IsValidSessionKey(key))
+        {
+            status = "key_unavailable";
+            return false;
+        }
+        var decrypted = DecryptPayload(frame, key);
+        if (!frame.IsPlaintext && frame.Payload.Length > 0 && frame.Payload.Length % BlockSize == 0
+            && ReferenceEquals(decrypted, frame.Payload))
+        {
+            status = "decrypt_failed";
+            return false;
+        }
+        if (frame.IsCompressed && !TryInflate(decrypted, frame.OrigSize, out decrypted))
+        {
+            status = "decompress_failed";
+            return false;
+        }
+        plain = decrypted;
+        return true;
     }
 
     /// <summary>只做解密（不含解压）。</summary>
     public static byte[] DecryptRaw(GatewayFrame frame, byte[]? sessionKey)
+    {
+        using var cipher = new FrameCipher();
+        return cipher.DecryptPayload(frame, sessionKey);
+    }
+
+    private byte[] DecryptPayload(GatewayFrame frame, byte[]? sessionKey)
     {
         var payload = frame.Payload;
 
@@ -135,16 +159,18 @@ public static class FrameCipher
         byte[] plain;
         try
         {
-            // ★ 复用缓存的 decryptor（密钥不变期间零分配）；异常时重建一次再试
-            var decryptor = GetDecryptor(sessionKey!);
-            try
+            lock (_gate)
             {
-                plain = decryptor.TransformFinalBlock(payload, 0, payload.Length);
-            }
-            catch (CryptographicException)
-            {
-                InvalidateCachedTransform();
-                plain = GetDecryptor(sessionKey!).TransformFinalBlock(payload, 0, payload.Length);
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                try
+                {
+                    plain = GetDecryptor(sessionKey!).TransformFinalBlock(payload, 0, payload.Length);
+                }
+                catch (CryptographicException)
+                {
+                    ClearTransform();
+                    throw;
+                }
             }
         }
         catch (CryptographicException)

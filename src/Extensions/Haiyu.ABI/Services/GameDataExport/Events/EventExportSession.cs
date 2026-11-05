@@ -4,10 +4,11 @@ using System.Threading.Channels;
 using ABI.Models;
 using Haiyu.ABI.Services.GameDataExport.Decrypt;
 using Haiyu.ABI.Services.GameDataExport.Protocol;
+using Haiyu.ABI.Services.GameDataExport.Session;
 
 namespace Haiyu.ABI.Services.GameDataExport.Events;
 /// <summary>单写入者的有界 JSONL 事件流。捕获线程只投递完整事件；磁盘失败/溢出明确停止，不静默丢弃。</summary>
-internal sealed class EventExportSession
+internal sealed class EventExportSession : IGameMessageObserver
 {
     internal sealed record Limits(int QueueBytes = 32 * 1024 * 1024, int QueueItems = 512, long ShardBytes = 128L * 1024 * 1024, long CaptureBytes = 1024L * 1024 * 1024, int OpenFiles = 16);
     private sealed record Envelope(byte[]? Bytes, int? Player, string Session, string Status, bool Bind = false);
@@ -21,7 +22,6 @@ internal sealed class EventExportSession
     private readonly object _gate = new();
     private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
     private readonly ProtocolCatalog _catalog = ProtocolCatalog.Default.Value;
-    private readonly ProtocolJsonDecoder _decoder;
     private readonly Channel<Envelope> _queue;
     private readonly Limits _limits;
     private readonly string _root;
@@ -44,7 +44,6 @@ internal sealed class EventExportSession
     {
         _root = root;
         _limits = limits ?? new();
-        _decoder = new(_catalog);
         _queue = Channel.CreateBounded<Envelope>(new BoundedChannelOptions(_limits.QueueItems) { SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.Wait });
         ManifestPath = Path.Combine(root, "captures", CaptureId, "manifest.json");
         Directory.CreateDirectory(Path.GetDirectoryName(ManifestPath)!);
@@ -59,19 +58,16 @@ internal sealed class EventExportSession
                 throw new IOException(_error);
     }
 
-    internal bool Publish(GatewayFrame frame, byte[]? plain, int? player, string session, uint connection, string? status = null, bool connectionVerified = true)
+    public void Observe(MessageObservation message) => Publish(message.Frame, message.Plain, message.PlayerId,
+        message.SessionId, message.ConnectionId, message.Status, message.Protocol);
+
+    private void Publish(GatewayFrame frame, byte[]? plain, int? player, string session, uint connection,
+        string? status, ProtocolJsonDecoder.Result? decoded)
     {
         ThrowIfFailed();
         lock (_gate) _received++;
         if ((plain ?? frame.Payload).Length > _limits.QueueBytes / 2)
             throw new IOException("单条消息超过事件导出的内存预算，已停止捕获。");
-        var decoded = status == null && plain != null ? _decoder.Decode(frame.MsgId, plain) : null;
-        var verified = decoded?.Status.StartsWith("decoded", StringComparison.Ordinal) == true;
-        if (!connectionVerified && !verified)
-        {
-            player = null;
-            session = "unverified-" + session + "-" + connection;
-        }
         status ??= frame.Type == GatewayMessageType.Exception ? "transport_exception" : decoded?.Status ?? "key_unavailable";
         if (frame.Type == GatewayMessageType.Exception && decoded is not null)
             status = "transport_exception";
@@ -90,6 +86,8 @@ internal sealed class EventExportSession
                 json.WriteNull("playerId");
             json.WriteString("direction", "server_to_client");
             json.WriteString("frameType", frame.Type.ToString());
+            if (frame.Type == GatewayMessageType.Exception)
+                json.WriteNumber("errorCode", frame.Crc);
             if (frame.Type is GatewayMessageType.Exception or GatewayMessageType.Invalid)
                 json.WriteNull("msgId");
             else
@@ -109,7 +107,9 @@ internal sealed class EventExportSession
                 json.WriteNullValue();
             if (decoded?.Json == null || decoded.HasUnknownFields)
             {
-                json.WriteString("rawEncoding", frame.Type == GatewayMessageType.Invalid ? "gateway_fragment" : plain == null ? "encrypted_or_unavailable" : "protobuf");
+                json.WriteString("rawEncoding", frame.Type == GatewayMessageType.Invalid ? "gateway_fragment"
+                    : frame.Type == GatewayMessageType.Exception ? "transport_control"
+                    : plain == null ? "encrypted_or_unavailable" : "protobuf");
                 json.WriteBase64String("rawPayload", plain ?? frame.Payload);
             }
 
@@ -120,10 +120,9 @@ internal sealed class EventExportSession
 
         var bytes = buffer.ToArray();
         Enqueue(new(bytes, player, session, status));
-        return verified;
     }
 
-    internal void Bind(string session, int player)
+    public void Bind(string session, int player)
     {
         if (_announced.TryGetValue(session, out var previous) && previous == player)
             return;

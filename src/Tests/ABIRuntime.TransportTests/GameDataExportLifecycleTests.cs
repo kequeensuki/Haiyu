@@ -2,16 +2,16 @@ using System.Buffers.Binary;
 using System.IO.Pipes;
 using System.Security.Cryptography;
 using ABI.Models;
-using ABIRuntime;
 using ABIRuntime.Abstractions;
 using ABIRuntime.Runtime;
+using ABIRuntime;
 using Google.Protobuf;
 using Haiyu.ABI.Protocol;
-using Haiyu.ABI.Services.GameDataExport;
 using Haiyu.ABI.Services.GameDataExport.Capture;
 using Haiyu.ABI.Services.GameDataExport.Decrypt;
 using Haiyu.ABI.Services.GameDataExport.Export;
 using Haiyu.ABI.Services.GameDataExport.Rebuild;
+using Haiyu.ABI.Services.GameDataExport;
 using MemoryPack;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -74,6 +74,7 @@ internal static partial class Program
             frame[0] = (byte)length; frame[1] = (byte)(length >> 8); frame[2] = (byte)(length >> 16);
             frame[3] = 4;
             BinaryPrimitives.WriteUInt16LittleEndian(frame.AsSpan(8), id);
+            BinaryPrimitives.WriteUInt32LittleEndian(frame.AsSpan(10), Crc32.Compute(payload));
             payload.CopyTo(frame, 14);
             var raw = new byte[5 + frame.Length];
             raw[0] = 0xEC;

@@ -1,13 +1,15 @@
 using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text;
+using ABI.Models;
 using Google.Protobuf;
 using Haiyu.ABI.Protocol;
-using System.Text;
-using System.Text.Json;
-using ABI.Models;
 using Haiyu.ABI.Services.GameDataExport.Decrypt;
 using Haiyu.ABI.Services.GameDataExport.Events;
 using Haiyu.ABI.Services.GameDataExport.Export;
 using Haiyu.ABI.Services.GameDataExport.Protocol;
+using Haiyu.ABI.Services.GameDataExport.Rebuild;
+using Haiyu.ABI.Services.GameDataExport.Session;
 
 namespace ABIRuntime.TransportTests;
 internal static partial class Program
@@ -18,7 +20,7 @@ internal static partial class Program
         Equal(true, catalog.Ids.Values.All(catalog.Messages.ContainsKey));
         Equal(true, catalog.Messages.Count > 5000 && catalog.Ids.Count > 3000);
         var decoder = new ProtocolJsonDecoder(catalog);
-        var plaintextFrame = new GatewayFrame(GatewayMessageType.Push, 4, 1, 0, 1, 0, new byte[]{8,1});
+        var plaintextFrame = new GatewayFrame(GatewayMessageType.Push, 4, 1, 0, 1, Crc32.Compute(new byte[] { 8, 1 }), new byte[]{8,1});
         Equal(true, FrameCipher.TryDecrypt(plaintextFrame, new byte[32], out var plaintext, out _));
         Equal(true, plaintext!.SequenceEqual(plaintextFrame.Payload));
         // 独立手写 wire 向量：sint32(-1)、fixed32(0x12345678)、sfixed32(-2)、int64(2^53+1)。
@@ -58,9 +60,9 @@ internal static partial class Program
         Equal("unknown_message", decoder.Decode(65535, [8, 1]).Status);
         Equal("parse_failed", decoder.Decode(guide, [42, 127, 1]).Status);
         Equal("parse_failed", decoder.Decode(guide, [0]).Status);
-        using var state = new InventoryCaptureState(new SessionKeyLoader(), GameDataExportScope.None);
+        using var state = new CaptureConnectionState(new SessionKeyLoader(), GameDataExportScope.None);
         var faults = new List<string>();
-        state.FrameRejected = (_, _, reason) => faults.Add(reason);
+        state.Observer = new TestMessageObserver(m => faults.Add(m.Status!));
         var invalid = new byte[14]; invalid[0] = 11;
         state.ConsumeRaw(invalid);
         state.ConsumeRaw(new byte[]{1,2});
@@ -75,10 +77,10 @@ internal static partial class Program
         {
             var events = new EventExportSession(root, new(QueueBytes: 1024 * 1024, ShardBytes: 700, CaptureBytes: 1024 * 1024));
             var frame = new GatewayFrame(GatewayMessageType.Push, 4, 1, 0, 65535, 0, [8, 1]);
-            events.Publish(frame, frame.Payload, null, "login-a", 1);
+            PublishEvent(events, frame, frame.Payload, null, "login-a", 1);
             events.Bind("login-a", 111);
-            events.Publish(frame with { SeqNo = 2 }, frame.Payload, 111, "login-a", 1);
-            events.Publish(frame with { SeqNo = 3 }, frame.Payload, 222, "login-b", 2);
+            PublishEvent(events, frame with { SeqNo = 2 }, frame.Payload, 111, "login-a", 1);
+            PublishEvent(events, frame with { SeqNo = 3 }, frame.Payload, 222, "login-b", 2);
             var stats = await events.FinishAsync(null);
             Equal(true, stats.Complete);
             Equal(3L, stats.Written);
@@ -99,7 +101,7 @@ internal static partial class Program
             var overflow = new EventExportSession(Path.Combine(root, "overflow"), new(QueueBytes: 1));
             try
             {
-                overflow.Publish(frame, frame.Payload, null, "x", 1);
+                PublishEvent(overflow, frame, frame.Payload, null, "x", 1);
                 throw new Exception("队列上限未触发");
             }
             catch (IOException)
@@ -111,7 +113,7 @@ internal static partial class Program
             Equal(1L, failed.Dropped);
             Equal(0L, failed.Written);
             var disk = new EventExportSession(Path.Combine(root, "disk"), new(CaptureBytes: 1));
-            disk.Publish(frame, frame.Payload, null, "x", 1);
+            PublishEvent(disk, frame, frame.Payload, null, "x", 1);
             failed = await disk.FinishAsync(null);
             Equal(false, failed.Complete);
             Equal(0L, failed.Written);
@@ -123,31 +125,33 @@ internal static partial class Program
             keyLoader.LoadPrivateKeyPem(rsa.ExportPkcs8PrivateKeyPem());
             keyLoader.TryResolve(new(GatewayMessageType.Push,4,1,0,112,0,
                 new ProtoKeyResponse { Key = ByteString.CopyFrom(rsa.Encrypt(new byte[32], RSAEncryptionPadding.Pkcs1)) }.ToByteArray()));
-            using var parent = new InventoryCaptureState(keyLoader, GameDataExportScope.Inventory | GameDataExportScope.AllServerMessages);
-            parent.PlayerId.TryFeed(new(GatewayMessageType.Push,4,1,0,15380,0,new BasicInfoNotify{Id=123}.ToByteArray()));
+            using var parent = new CaptureConnectionState(keyLoader, GameDataExportScope.Inventory | GameDataExportScope.AllServerMessages);
+            parent.Session.PlayerId.TryFeed(new(GatewayMessageType.Push,4,1,0,15380,0,new BasicInfoNotify{Id=123}.ToByteArray()));
             uint gatewaySequence = 0;
-            parent.FrameObserved = (_, _, _, _) => true;
+            parent.Observer = new TestMessageObserver(_ => { });
             parent.ConsumeRaw(Gateway(WavesMessageIds.LoginResponse, []));
-            Equal(PlayerIdResolver.Phase.Resolved, parent.PlayerId.Current);
+            Equal(PlayerIdResolver.Phase.Resolved, parent.Session.PlayerId.Current);
             parent.ConsumeRaw(Gateway(WavesMessageIds.LogoutNotify, []));
             parent.ConsumeRaw(Gateway(WavesMessageIds.BasicInfoNotify, new BasicInfoNotify{Id=456}.ToByteArray()));
             parent.ConsumeRaw(Gateway(WavesMessageIds.LoginResponse, []));
-            Equal(PlayerIdResolver.Phase.Resolved, parent.PlayerId.Current);
-            Equal(456, parent.PlayerId.PlayerId);
+            Equal(PlayerIdResolver.Phase.Resolved, parent.Session.PlayerId.Current);
+            Equal(456, parent.Session.PlayerId.PlayerId);
             using var candidate = parent.ForkForReconnect();
             var candidateEvents = new EventExportSession(Path.Combine(root,"candidate"));
-            candidate.FrameObserved = (state,f,plain,status) => candidateEvents.Publish(f,plain,state.EventPlayerId,state.EventSessionId,2,status,state.HasVerifiedTraffic);
-            candidate.IdentityObserved = candidateEvents.Bind;
+            candidate.Observer = candidateEvents;
+            candidate.ConnectionId = 2;
             byte[] Gateway(ushort id, byte[] body)
             {
                 var bytes=new byte[14+body.Length];var size=bytes.Length-3;
                 bytes[0]=(byte)size;bytes[1]=(byte)(size>>8);bytes[2]=(byte)(size>>16);bytes[3]=4;
                 System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4),++gatewaySequence);
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(8),id);body.CopyTo(bytes,14);return bytes;
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(8),id);
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(10),Crc32.Compute(body));
+                body.CopyTo(bytes,14);return bytes;
             }
-            candidate.ConsumeRaw(Gateway(65535,[8,1]));Equal(false,candidate.HasVerifiedTraffic);
+            candidate.ConsumeRaw(Gateway(65535,[8,1]));Equal(false,candidate.Session.HasVerifiedTraffic);
             var guideId=(ushort)ProtocolCatalog.Default.Value.Ids.Single(p=>p.Value=="Aki.Protocol.AddUnlockedGuideNotify").Key;
-            candidate.ConsumeRaw(Gateway(guideId,[42,2,1,4]));Equal(true,candidate.HasVerifiedTraffic);
+            candidate.ConsumeRaw(Gateway(guideId,[42,2,1,4]));Equal(true,candidate.Session.HasVerifiedTraffic);
             var candidateStats=await candidateEvents.FinishAsync(null);
             Equal(1L,candidateStats.Unresolved);Equal(1L,candidateStats.Players.Single().Written);
             var memoryBefore = GC.GetTotalMemory(true);
@@ -155,7 +159,7 @@ internal static partial class Program
             var stress = new EventExportSession(Path.Combine(root, "stress"));
             for (var i = 0; i < 50_000; i++)
             {
-                stress.Publish(frame with { SeqNo = (uint)i + 1 }, frame.Payload, 123, "stress-login", 1);
+                PublishEvent(stress, frame with { SeqNo = (uint)i + 1 }, frame.Payload, 123, "stress-login", 1);
                 if (i % 16 == 0) await Task.Delay(1);
             }
             var sustained = await stress.FinishAsync(null);

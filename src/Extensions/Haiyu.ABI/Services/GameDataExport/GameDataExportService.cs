@@ -1,12 +1,14 @@
-using Haiyu.ABI.Services.GameDataExport.Events;
+using System.Buffers.Binary;
 using System.Runtime.Versioning;
 using ABI.Models;
 using ABIRuntime.Abstractions;
 using Haiyu.ABI.Services.GameDataExport.Capture;
 using Haiyu.ABI.Services.GameDataExport.Decrypt;
+using Haiyu.ABI.Services.GameDataExport.Events;
 using Haiyu.ABI.Services.GameDataExport.Export;
 using Haiyu.ABI.Services.GameDataExport.Rebuild;
 using Haiyu.ABI.Services.GameDataExport.Security;
+using Haiyu.ABI.Services.GameDataExport.Session;
 
 namespace Haiyu.ABI.Services.GameDataExport;
 
@@ -89,14 +91,17 @@ public sealed class GameDataExportService
         var decodedTotal = 0;
         // 次数属于玩家，不属于抓包连接；切网重连或切回同一账号时继续累计。
         var updatesByPlayer = new Dictionary<int, int>();
+        var snapshotFailures = new Dictionary<int, string>();
         var summariesByPlayer = new Dictionary<int, GameDataExportPlayerSummary>();
         var writtenVersions = new Dictionary<uint, int>();
         var lastAttempts = new Dictionary<uint, long>();
         var lastReport = Environment.TickCount64;
         var connections = new Dictionary<uint, KcpConnection>();
         var streams = new Dictionary<uint, KcpStreamRebuilder>();
-        var states = new Dictionary<uint, InventoryCaptureState>();
-        var serverAddresses = new Dictionary<uint, string>();
+        var states = new Dictionary<uint, CaptureConnectionState>();
+        var endpoints = new Dictionary<uint, ConnectionKey>();
+        var connectionIds = new Dictionary<ConnectionKey, uint>();
+        uint nextConnectionId = 0;
         var sessionFamilies = new Dictionary<uint, uint>();
         var adaptive = capture as IAdaptiveUdpCapture;
         uint? lastVerifiedConnection = null;
@@ -105,7 +110,13 @@ public sealed class GameDataExportService
 
         void RememberExport(GameDataExportResult result)
         {
-            if (result is not { Success: true, OutputJsonPath: not null, Inventory: not null }) return;
+            if (!result.Success)
+            {
+                snapshotFailures[result.PlayerId] = result.Message;
+                return;
+            }
+            snapshotFailures.Remove(result.PlayerId);
+            if (result is not { OutputJsonPath: not null, Inventory: not null }) return;
             updatesByPlayer[result.PlayerId] = result.UpdateCount;
             summariesByPlayer[result.PlayerId] = new(result.PlayerId, result.UpdateCount,
                 result.Inventory.NormalItems.Count, result.Inventory.Weapons.Count,
@@ -116,29 +127,27 @@ public sealed class GameDataExportService
         {
             capture.Stop();
             var pending = events is not null && streams.Any(p => p.Value.SegmentCount > 0
-                && states.TryGetValue(p.Key, out var state) && state.HasVerifiedTraffic);
+                && states.TryGetValue(p.Key, out var state) && state.Session.HasVerifiedTraffic);
             var eventStats = events is null ? null : await events.FinishAsync(failed ? result.Message
                 : pending ? "停止时仍有未完成的 KCP 重组数据，捕获可能不完整。" : null).ConfigureAwait(false);
+            if (snapshotFailures.Count > 0)
+                result = result with { Success = false, Message = string.Join("；", snapshotFailures.OrderBy(p => p.Key)
+                    .Select(p => $"玩家 {p.Key}：{p.Value}")) };
             if (eventStats is not null)
             {
-                if (eventStats.Error is not null) result = result with { Success = false, Message = eventStats.Error };
-                else if (eventStats.Written > 0) result = result with { Success = true, Message = "消息事件导出已结束。" };
+                if (eventStats.Error is not null)
+                    result = result with { Success = false, Message = eventStats.Error + (result.Success ? "" : "\n" + result.Message) };
+                else if (eventStats.Written > 0 && (result.Success || !request.Scope.HasFlag(GameDataExportScope.Inventory)))
+                    result = result with { Success = true, Message = "消息事件导出已结束。" };
             }
             return result with { PlayerSummaries = summariesByPlayer.Values.OrderBy(s => s.PlayerId).ToArray(), EventExport = eventStats };
-        }
-
-        bool ObserveFrame(InventoryCaptureState state, GatewayFrame frame, byte[]? plain, string? status)
-        {
-            int? player = status == "key_resolution_failed" ? null : state.EventPlayerId;
-            var session = status == "key_resolution_failed" ? state.EventSessionId + "-unverified-" + frame.SeqNo : state.EventSessionId;
-            return events!.Publish(frame, plain, player, session, state.ConnectionId, status, state.HasVerifiedTraffic);
         }
 
         void RemoveConnection(uint conv)
         {
             if (streams.Remove(conv, out var stream)) stream.Clear();
             connections.Remove(conv);
-            serverAddresses.Remove(conv);
+            if (endpoints.Remove(conv, out var endpoint)) connectionIds.Remove(endpoint);
             sessionFamilies.Remove(conv);
             writtenVersions.Remove(conv);
             lastAttempts.Remove(conv);
@@ -154,37 +163,37 @@ public sealed class GameDataExportService
         bool IsCurrentSession(uint conv) => lastVerifiedConnection is not { } current
             || !sessionFamilies.TryGetValue(current, out var family) || sessionFamilies[conv] == family;
 
-        void Consume(uint conv, Action<InventoryCaptureState> read, UdpFrame packet, Func<bool>? freshKcp = null)
+        void Consume(uint conv, Action<CaptureConnectionState> read, UdpFrame packet, Func<bool>? freshKcp = null)
         {
             var state = states[conv];
-            var verifiedBefore = state.HasVerifiedTraffic;
-            var framesBefore = state.VerifiedFrames;
-            var identityBefore = state.IdentityVersion;
-            var decodedBefore = state.DecodedOnConnection;
+            var verifiedBefore = state.Session.HasVerifiedTraffic;
+            var framesBefore = state.Session.VerifiedFrames;
+            var identityBefore = state.Session.IdentityVersion;
+            var decodedBefore = state.Inventory.DecodedOnConnection;
             try { read(state); }
-            catch (InvalidDataException ex) when ((!verifiedBefore && !state.HasVerifiedTraffic) || !IsCurrentSession(conv))
+            catch (InvalidDataException ex) when ((!verifiedBefore && !state.Session.HasVerifiedTraffic) || !IsCurrentSession(conv))
             {
                 // 未确认的候选连接不能让已确认的游戏会话终止。
                 DropCandidate(conv, ex.Message);
                 return;
             }
-            finally { decodedTotal += state.DecodedOnConnection - decodedBefore; }
-            if (!keyReported && state.SessionKey is not null)
+            finally { decodedTotal += state.Inventory.DecodedOnConnection - decodedBefore; }
+            if (!keyReported && state.Session.SessionKey is not null)
             {
                 keyReported = true;
                 progress.Report(new(GameDataExportStage.Decrypting, 20, "已取得会话密钥，等待玩家身份及背包数据。",
                     SessionKeyAcquired: true));
             }
-            if (state.HasVerifiedTraffic && (state.VerifiedFrames != framesBefore || (verifiedBefore && freshKcp?.Invoke() == true)))
+            if (state.Session.HasVerifiedTraffic && (state.Session.VerifiedFrames != framesBefore || (verifiedBefore && freshKcp?.Invoke() == true)))
             {
                 // 新连接确认后淘汰同一会话的旧传输，防止旧的待写快照覆盖新数据。
                 var family = sessionFamilies[conv];
-                var identityChanged = state.IdentityVersion != identityBefore;
+                var identityChanged = state.Session.IdentityVersion != identityBefore;
                 if (!identityChanged && !IsCurrentSession(conv)) return;
                 foreach (var previous in states.Keys.Where(k => k != conv && sessionFamilies[k] == family).ToArray())
                     RemoveConnection(previous);
                 // 旧连接的后台 KCP 包只能确认捕获接口，不能把当前玩家切回旧账号。
-                if (identityChanged || state.VerifiedFrames != framesBefore || lastVerifiedConnection is null)
+                if (identityChanged || state.Session.VerifiedFrames != framesBefore || lastVerifiedConnection is null)
                     lastVerifiedConnection = conv;
                 adaptive?.ConfirmInterface(packet);
             }
@@ -206,7 +215,7 @@ public sealed class GameDataExportService
                 foreach (var pair in streams.ToArray())
                 {
                     try { pair.Value.ValidatePending(); }
-                    catch (InvalidDataException ex) when (!states[pair.Key].HasVerifiedTraffic || !IsCurrentSession(pair.Key))
+                    catch (InvalidDataException ex) when (!states[pair.Key].Session.HasVerifiedTraffic || !IsCurrentSession(pair.Key))
                     {
                         DropCandidate(pair.Key, ex.Message);
                     }
@@ -222,49 +231,44 @@ public sealed class GameDataExportService
                             packet.Payload.Span, packet.SrcPort, packet.DstPort, out var connection)
                             && connection is not null)
                         {
-                            if (!connections.ContainsKey(connection.Conv))
+                            var endpoint = ConnectionKey.From(packet, connection.Conv);
+                            if (!connectionIds.TryGetValue(endpoint, out var connectionId))
                             {
-                                streams[connection.Conv] = new KcpStreamRebuilder();
+                                connectionId = ++nextConnectionId;
+                                connectionIds.Add(endpoint, connectionId);
+                                streams[connectionId] = new KcpStreamRebuilder();
                                 if (adaptive is { NetworkGeneration: > 0 } && lastVerifiedConnection is { } previous
-                                    && states.TryGetValue(previous, out var session) && session.SessionKey is not null)
+                                    && states.TryGetValue(previous, out var session) && session.Session.SessionKey is not null)
                                 {
-                                    states[connection.Conv] = session.ForkForReconnect();
-                                    writtenVersions[connection.Conv] = writtenVersions.GetValueOrDefault(previous);
-                                    sessionFamilies[connection.Conv] = sessionFamilies[previous];
+                                    states[connectionId] = session.ForkForReconnect();
+                                    writtenVersions[connectionId] = writtenVersions.GetValueOrDefault(previous);
+                                    sessionFamilies[connectionId] = sessionFamilies[previous];
                                 }
                                 else
                                 {
-                                    states[connection.Conv] = new InventoryCaptureState(_keyLoader.CreateSession(), request.Scope);
-                                    sessionFamilies[connection.Conv] = connection.Conv;
+                                    states[connectionId] = new CaptureConnectionState(_keyLoader.CreateSession(), request.Scope);
+                                    sessionFamilies[connectionId] = connectionId;
                                 }
                             }
-                            var eventState = states[connection.Conv];
-                            eventState.ConnectionId = connection.Conv;
-                            if (events is not null)
-                            {
-                                eventState.FrameObserved = ObserveFrame;
-                                eventState.IdentityObserved = events.Bind;
-                                eventState.FrameRejected = (state, bytes, status) => ObserveFrame(state,
-                                    new GatewayFrame(GatewayMessageType.Invalid, 0, 0, 0, 0, 0, bytes), null, status);
-                            }
+                            var eventState = states[connectionId];
+                            eventState.ConnectionId = connectionId;
+                            eventState.Observer = events;
                             // 重连可改变本地地址/端口，但不会因此清除密钥及玩家信息。
-                            connections[connection.Conv] = connection;
-                            serverAddresses[connection.Conv] = packet.SrcIp;
+                            connections[connectionId] = connection;
+                            endpoints[connectionId] = endpoint;
                         }
                         else if (packet.Payload.Length >= 5 && packet.Payload.Span[0] == RawFrameTag)
                         {
-                            var conv = BitConverter.ToUInt32(packet.Payload.Span[1..]);
-                            if (connections.TryGetValue(conv, out var owner) && packet.DstPort == owner.ClientPort
-                                && packet.SrcPort == owner.ServerPort && serverAddresses[conv] == packet.SrcIp)
-                                Consume(conv, s => s.ConsumeRaw(packet.Payload.Span[5..].ToArray()), packet);
+                            var conv = BinaryPrimitives.ReadUInt32LittleEndian(packet.Payload.Span[1..]);
+                            if (connectionIds.TryGetValue(ConnectionKey.From(packet, conv), out var connectionId))
+                                Consume(connectionId, s => s.ConsumeRaw(packet.Payload.Span[5..].ToArray()), packet);
                         }
                         else
                         {
                             foreach (var pair in connections.ToArray())
                             {
                                 if (!connections.TryGetValue(pair.Key, out var owner)) continue;
-                                if (packet.SrcPort != owner.ServerPort || packet.DstPort != owner.ClientPort
-                                    || serverAddresses[pair.Key] != packet.SrcIp)
+                                if (!endpoints[pair.Key].Matches(packet))
                                     continue;
                                 if (!KcpSegment.TryParseMany(packet.Payload.Span, packet.Payload,
                                     owner.CrcEnabled, out var segments))
@@ -303,32 +307,32 @@ public sealed class GameDataExportService
                 {
                     if (!IsCurrentSession(pair.Key)) continue;
                     var state = pair.Value;
-                    if (state.TakeDiagnostic() is { } diagnostic)
+                    if (state.Session.TakeDiagnostic() is { } diagnostic)
                         Report(progress, GameDataExportStage.Capturing, 20, diagnostic);
-                    if (!state.PlayerId.OnTick())
-                        throw new InvalidOperationException(state.PlayerId.FailureReason);
-                    if (state.PlayerId.Current == PlayerIdResolver.Phase.Failed)
-                        throw new InvalidOperationException(state.PlayerId.FailureReason);
+                    if (!state.Session.PlayerId.OnTick())
+                        throw new InvalidOperationException(state.Session.PlayerId.FailureReason);
+                    if (state.Session.PlayerId.Current == PlayerIdResolver.Phase.Failed)
+                        throw new InvalidOperationException(state.Session.PlayerId.FailureReason);
                     if (!state.Ready)
                         continue;
-                    if (writtenVersions.GetValueOrDefault(pair.Key) == state.Version)
+                    if (writtenVersions.GetValueOrDefault(pair.Key) == state.Inventory.Version)
                         continue;
                     var now = Environment.TickCount64;
                     if (lastAttempts.TryGetValue(pair.Key, out var lastAttempt) && now - lastAttempt < 1000)
                         continue;
                     lastAttempts[pair.Key] = now;
                     // Both protobuf snapshots and playerId are ready before any file is written.
-                    var playerId = state.PlayerId.PlayerId;
+                    var playerId = state.Session.PlayerId.PlayerId;
                     var updateCount = updatesByPlayer.GetValueOrDefault(playerId) + 1;
                     lastResult = await BuildAndWriteAsync(
-                        state.NormalItems, state.Weapons, state.Phantoms, state.ValidTimeItems,
-                        captured, state.DecodedFrames, updateCount, sessionStart, progress,
-                        firstExport: updateCount == 1, playerId: playerId, sessionKey: state.SessionKey!).ConfigureAwait(false);
+                        state.Inventory.NormalItems, state.Inventory.Weapons, state.Inventory.Phantoms, state.Inventory.ValidTimeItems,
+                        captured, state.Inventory.DecodedFrames, updateCount, sessionStart, progress,
+                        firstExport: updateCount == 1, playerId: playerId, sessionKey: state.Session.SessionKey!).ConfigureAwait(false);
                     if (lastResult.OutputJsonPath is not null)
                     {
-                        writtenVersions[pair.Key] = state.Version;
-                        RememberExport(lastResult);
+                        writtenVersions[pair.Key] = state.Inventory.Version;
                     }
+                    RememberExport(lastResult);
                 }
                 if (Environment.TickCount64 - lastReport >= 2000)
                 {
@@ -342,25 +346,25 @@ public sealed class GameDataExportService
                             EventExport: stats));
                     }
                     var current = lastVerifiedConnection is { } id && states.TryGetValue(id, out var active)
-                        ? active : states.Values.OrderByDescending(s => s.ParsedCategories).FirstOrDefault();
+                        ? active : states.Values.OrderByDescending(s => s.Inventory.ParsedCategories).FirstOrDefault();
                     if (current is { Ready: true } && lastResult is { Success: true }
-                        && lastResult.PlayerId == current.PlayerId.PlayerId)
+                        && lastResult.PlayerId == current.Session.PlayerId.PlayerId)
                     {
                         ReportMonitoring(progress, lastResult);
                     }
                     else if (current is { Ready: true } && lastResult is { Success: false }
-                        && lastResult.PlayerId == current.PlayerId.PlayerId)
+                        && lastResult.PlayerId == current.Session.PlayerId.PlayerId)
                     {
                         Report(progress, GameDataExportStage.Exporting, 85, lastResult.Message);
                     }
                     else
                     {
-                        var message = current?.SessionKey is null
+                        var message = current?.Session.SessionKey is null
                             ? $"等待游戏登录与会话密钥（UDP {captured} 帧）"
-                            : current.PlayerId.Current != PlayerIdResolver.Phase.Resolved
+                            : current.Session.PlayerId.Current != PlayerIdResolver.Phase.Resolved
                                 ? "已取得会话密钥，正在等待玩家身份信息"
-                                : $"玩家 {current.PlayerId.PlayerId}：正在解析背包数据（{current.ParsedCategories}/4）";
-                        Report(progress, GameDataExportStage.Capturing, 10 + (current?.ParsedCategories ?? 0) * 10, message);
+                                : $"玩家 {current.Session.PlayerId.PlayerId}：正在解析背包数据（{current.Inventory.ParsedCategories}/4）";
+                        Report(progress, GameDataExportStage.Capturing, 10 + (current?.Inventory.ParsedCategories ?? 0) * 10, message);
                     }
                 }
             }
@@ -368,17 +372,16 @@ public sealed class GameDataExportService
             {
                 if (!IsCurrentSession(pair.Key)) continue;
                 var state = pair.Value;
-                if (state.Ready && writtenVersions.GetValueOrDefault(pair.Key) != state.Version)
+                if (state.Ready && writtenVersions.GetValueOrDefault(pair.Key) != state.Inventory.Version)
                 {
-                    var playerId = state.PlayerId.PlayerId;
+                    var playerId = state.Session.PlayerId.PlayerId;
                     var updateCount = updatesByPlayer.GetValueOrDefault(playerId) + 1;
                     lastResult = await BuildAndWriteAsync(
-                        state.NormalItems, state.Weapons, state.Phantoms, state.ValidTimeItems,
-                        captured, state.DecodedFrames, updateCount, sessionStart, progress,
+                        state.Inventory.NormalItems, state.Inventory.Weapons, state.Inventory.Phantoms, state.Inventory.ValidTimeItems,
+                        captured, state.Inventory.DecodedFrames, updateCount, sessionStart, progress,
                         firstExport: updateCount == 1, playerId: playerId,
-                        sessionKey: state.SessionKey!).ConfigureAwait(false);
-                    if (lastResult.OutputJsonPath is not null)
-                        RememberExport(lastResult);
+                        sessionKey: state.Session.SessionKey!).ConfigureAwait(false);
+                    RememberExport(lastResult);
                 }
             }
             return await CompleteAsync(lastResult ?? Failure("监控已停止，尚未取得完整背包及玩家身份信息，未生成导出文件。", captured, decodedTotal, null)).ConfigureAwait(false);
@@ -488,6 +491,15 @@ public sealed class GameDataExportService
         string? sessionKeyHex
     ) =>
         new(false, message, null, null, captured, decoded, sessionKeyHex);
+
+    private readonly record struct ConnectionKey(string ServerIp, int ServerPort, string ClientIp, int ClientPort, uint Conv)
+    {
+        internal static ConnectionKey From(UdpFrame packet, uint conv) =>
+            new(packet.SrcIp, packet.SrcPort, packet.DstIp, packet.DstPort, conv);
+
+        internal bool Matches(UdpFrame packet) => packet.SrcIp == ServerIp && packet.SrcPort == ServerPort
+            && packet.DstIp == ClientIp && packet.DstPort == ClientPort;
+    }
 
     private sealed class EventProgress(IProgress<GameDataExportProgress> inner, EventExportSession events)
         : IProgress<GameDataExportProgress>

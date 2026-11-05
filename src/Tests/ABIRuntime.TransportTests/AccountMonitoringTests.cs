@@ -3,10 +3,11 @@ using System.Security.Cryptography;
 using ABI.Models;
 using Google.Protobuf;
 using Haiyu.ABI.Protocol;
-using Haiyu.ABI.Services.GameDataExport;
 using Haiyu.ABI.Services.GameDataExport.Capture;
-using Haiyu.ABI.Services.GameDataExport.Export;
 using Haiyu.ABI.Services.GameDataExport.Events;
+using Haiyu.ABI.Services.GameDataExport.Export;
+using Haiyu.ABI.Services.GameDataExport.Rebuild;
+using Haiyu.ABI.Services.GameDataExport;
 
 namespace ABIRuntime.TransportTests;
 
@@ -39,7 +40,9 @@ internal static partial class Program
             var bytes = new byte[14 + payload.Length]; var length = bytes.Length - 3;
             bytes[0] = (byte)length; bytes[1] = (byte)(length >> 8); bytes[2] = (byte)(length >> 16);
             bytes[3] = 4; BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), seq);
-            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(8), id); payload.CopyTo(bytes, 14);
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(8), id);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(10), Crc32.Compute(payload));
+            payload.CopyTo(bytes, 14);
             return bytes;
         }
         void Raw(uint conv, ushort id, byte[] payload, byte[] key)

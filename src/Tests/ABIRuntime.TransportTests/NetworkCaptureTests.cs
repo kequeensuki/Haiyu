@@ -5,9 +5,10 @@ using System.Text.Json;
 using ABI.Models;
 using Google.Protobuf;
 using Haiyu.ABI.Protocol;
-using Haiyu.ABI.Services.GameDataExport;
 using Haiyu.ABI.Services.GameDataExport.Capture;
 using Haiyu.ABI.Services.GameDataExport.Export;
+using Haiyu.ABI.Services.GameDataExport.Rebuild;
+using Haiyu.ABI.Services.GameDataExport;
 
 namespace ABIRuntime.TransportTests;
 
@@ -177,7 +178,9 @@ internal static partial class Program
                 var frame = new byte[14 + payload.Length]; var length = frame.Length - 3;
                 frame[0] = (byte)length; frame[1] = (byte)(length >> 8); frame[2] = (byte)(length >> 16);
                 frame[3] = 4; BinaryPrimitives.WriteUInt32LittleEndian(frame.AsSpan(4), seq);
-                BinaryPrimitives.WriteUInt16LittleEndian(frame.AsSpan(8), id); payload.CopyTo(frame, 14);
+                BinaryPrimitives.WriteUInt16LittleEndian(frame.AsSpan(8), id);
+                BinaryPrimitives.WriteUInt32LittleEndian(frame.AsSpan(10), Crc32.Compute(payload));
+                payload.CopyTo(frame, 14);
                 return frame;
             }
             UdpFrame Packet(byte[] bytes, int port = 45678) => new("203.0.113.10", 13108, "192.168.1.2", port, bytes, null);

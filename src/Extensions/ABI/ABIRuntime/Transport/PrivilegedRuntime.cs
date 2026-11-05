@@ -143,6 +143,21 @@ public sealed class PrivilegedRuntime : IAsyncDisposable
         progress?.Report(new PrivilegedProgress<TProgress>(
             PrivilegedStage.Executing, 45, "业务请求已发送，正在等待宿主执行"));
 
+        return await ReadResponseAsync<TProgress, TResponse>(requestPipe, requestId, contract.Operation,
+            progress, cancellationToken, contract.WaitForCompletionOnCancellation).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 普通请求取消后保留 5 秒宽限；需要落盘收尾的服务等待最终结果或管道断开。
+    /// 调用方仍可独立限定停止操作的等待时间，不把 UI 等待超时当作宿主已结束。
+    /// </summary>
+    internal static async ValueTask<TResponse> ReadResponseAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)] TProgress,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)] TResponse>(
+        Stream requestPipe, Guid requestId, string operation,
+        IProgress<IPrivilegedProgress<TProgress>>? progress, CancellationToken cancellationToken,
+        bool waitForCompletionOnCancellation = false) where TResponse : class
+    {
         bool cancellationSent = false;
         using var cancellationSignal = new CancellationTokenSignal(cancellationToken);
         using var cancellationGrace = new CancellationTokenSource();
@@ -168,7 +183,7 @@ public sealed class PrivilegedRuntime : IAsyncDisposable
                                 PipeMessageKind.Cancel,
                                 requestId,
                                 PipeProtocolVersion.Current,
-                                contract.Operation,
+                                operation,
                                 Array.Empty<byte>()),
                             sendTimeout.Token).ConfigureAwait(false);
                     }
@@ -177,7 +192,8 @@ public sealed class PrivilegedRuntime : IAsyncDisposable
                         throw new OperationCanceledException(
                             "发送远端取消消息时请求管道已关闭。", cancellationToken);
                     }
-                    cancellationGrace.CancelAfter(TimeSpan.FromSeconds(5));
+                    if (!waitForCompletionOnCancellation)
+                        cancellationGrace.CancelAfter(TimeSpan.FromSeconds(5));
                 }
             }
 
@@ -194,7 +210,7 @@ public sealed class PrivilegedRuntime : IAsyncDisposable
 
             if (message.RequestId != requestId ||
                 message.Version != PipeProtocolVersion.Current ||
-                message.Operation != contract.Operation)
+                message.Operation != operation)
             {
                 throw new InvalidDataException("响应与当前 Service 请求不匹配。");
             }
