@@ -32,8 +32,8 @@
 	<PackageReference Include="SharpDX.XInput" Version="4.2.0" />
     <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="4.0.0" />
     <!-- 游戏数据导出:protobuf 运行时 + 编译期代码生成(AOT 安全,无反射) -->
-    <PackageReference Include="Google.Protobuf" Version="3.28.3" />
-    <PackageReference Include="Grpc.Tools" Version="2.66.0" PrivateAssets="all" />
+    <PackageReference Include="Google.Protobuf" Version="3.36.2" />
+    <PackageReference Include="Grpc.Tools" Version="2.85.0" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
