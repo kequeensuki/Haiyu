@@ -16,10 +16,18 @@ import sqlite3
 import tempfile
 
 
+def export_root(path, manifest):
+    # 模块可在 captureId 下声明自己的目录，不能假定 manifest 只有固定的两层父目录。
+    for parent in path.parents:
+        if parent.name == manifest["captureId"] and parent.parent.name == "captures":
+            return parent.parent.parent
+    raise ValueError("manifest 不在所属 captureId 目录内")
+
+
 def validate(path):
     path = pathlib.Path(path).resolve()
-    root = path.parents[2]
     manifest = json.loads(path.read_text(encoding="utf-8"))
+    root = export_root(path, manifest)
     if manifest["state"] != "completed":
         raise ValueError(f"捕获未完整结束：{manifest['state']}；{manifest.get('error')}")
     bindings = manifest["sessionBindings"]
@@ -101,8 +109,8 @@ def validate(path):
 def repair_tails(path):
     """只修复未结束捕获的尾行；备份被移除的字节，绝不把 manifest 改为 completed。"""
     path = pathlib.Path(path).resolve()
-    root = path.parents[2]
     manifest = json.loads(path.read_text(encoding="utf-8"))
+    root = export_root(path, manifest)
     if manifest["state"] == "completed":
         raise ValueError("completed 捕获不自动修复；请保留损坏样本排查")
     repaired = 0
@@ -140,12 +148,56 @@ def repair_tails(path):
     return repaired
 
 
+def validate_capture_index(path):
+    """验证公共索引及其登记的产物；事件 manifest 继续使用原有流式验证。"""
+    path = pathlib.Path(path).resolve()
+    root = path.parents[2]
+    index = json.loads(path.read_text(encoding="utf-8"))
+    if index.get("formatVersion") != 1 or index.get("state") != "completed":
+        raise ValueError(f"捕获未完整结束或索引版本不支持：{index.get('state')}；{index.get('error')}")
+    if index.get("captureId") != path.parent.name or index.get("error"):
+        raise ValueError("捕获标识或结束错误不一致")
+    modules = index.get("modules", [])
+    if not modules or len({module["moduleId"] for module in modules}) != len(modules):
+        raise ValueError("模块清单为空或存在重复模块")
+    targets = set()
+    for module in modules:
+        if module["state"] != "Completed" or module.get("error"):
+            raise ValueError(f"模块未成功：{module['moduleId']}；{module.get('error')}")
+        for artifact in module.get("artifacts", []):
+            if artifact["moduleId"] != module["moduleId"]:
+                raise ValueError("产物与模块归属不一致")
+            file = pathlib.Path(artifact["path"])
+            if not file.is_absolute():
+                file = root / file
+            file = file.resolve()
+            if not file.is_relative_to(root) or not file.is_file() or file in targets:
+                raise ValueError(f"产物不存在、路径越界或存在重复目标：{file}")
+            targets.add(file)
+            if artifact["format"] == "manifest":
+                validate(file)
+            elif artifact["format"] == "json":
+                json.loads(file.read_text(encoding="utf-8"))
+            for source in artifact.get("sources", []):
+                if source["required"] and source["localVersion"] <= 0:
+                    raise ValueError(f"必需来源没有已接受版本：{source['sourceId']}")
+    return len(modules), len(targets)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", required=True)
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--manifest")
+    inputs.add_argument("--capture-index")
     parser.add_argument("--repair-tail", action="store_true", help="备份并移除未结束捕获的半条尾记录，不修改 manifest")
     args = parser.parse_args()
     try:
+        if args.capture_index:
+            if args.repair_tail:
+                raise ValueError("公共索引不支持尾记录修复，请指定事件 manifest")
+            modules, artifacts = validate_capture_index(args.capture_index)
+            print(f"PASS modules={modules}, artifacts={artifacts}")
+            return 0
         if args.repair_tail:
             print(f"Repaired tails: {repair_tails(args.manifest)}; manifest remains incomplete")
         totals, players, files = validate(args.manifest)

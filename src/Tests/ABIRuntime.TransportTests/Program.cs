@@ -23,6 +23,15 @@ internal static partial class Program
         ABIMemoryPack.EnsureFormatters();
         var tests = new (string Name, Func<Task> Run)[]
         {
+            ("通用会话通知：候选/确认恢复/新登录/退役", TestConfirmedResumeNotificationAsync),
+            ("消息筛选模块：并行路径/独立编号/玩家计数", TestFilteredMessageModulesAsync),
+            ("模块完成状态：单独/组合/无数据/部分数据", TestModuleCompletionStatesAsync),
+            ("快照在写时更新：冻结候选和 V/V+1 回执", TestInventoryPendingVersionAsync),
+            ("多来源：任意来源数/条件/空值/轮次/新鲜度/回执", TestAggregateSourcesAsync),
+            ("多来源：乱序分页/迟到批次/超时/有序增删改", TestAggregatePagesAndDeltasAsync),
+            ("共享输出：路径验证/代次隔离/失败保留旧文件", TestSharedOutputFencingAsync),
+            ("模块注册：新增无背包模块/选择校验/索引/ABI", TestExportModuleRegistryAsync),
+            ("背包模块：待身份聚合/多玩家次数/历史流量隔离", TestInventoryModuleIsolationAsync),
             ("Xbox 档位、序列化、服务与本机 XInput", TestXboxSessionsAsync),
             ("DI 构造注入、作用域与释放", TestDependencyInjectionAsync),
             ("MonitorRecord JSON/MemoryPack AOT 序列化", TestMonitorSerializationAsync),
@@ -56,7 +65,7 @@ internal static partial class Program
         };
 
         if (args.Contains("--game-data-export"))
-            tests = tests.Where(t => t.Run == TestExportConsumerBoundariesAsync || t.Run == TestLoginIsolationAsync || t.Run == TestFrameValidationAsync
+            tests = tests.Where(t => t.Run == TestConfirmedResumeNotificationAsync || t.Run == TestFilteredMessageModulesAsync || t.Run == TestModuleCompletionStatesAsync || t.Run == TestInventoryPendingVersionAsync || t.Run == TestAggregateSourcesAsync || t.Run == TestAggregatePagesAndDeltasAsync || t.Run == TestSharedOutputFencingAsync || t.Run == TestExportModuleRegistryAsync || t.Run == TestInventoryModuleIsolationAsync || t.Run == TestExportConsumerBoundariesAsync || t.Run == TestLoginIsolationAsync || t.Run == TestFrameValidationAsync
                 || t.Run == TestParallelDecryptionAsync || t.Run == TestExportResultIsolationAsync
                 || t.Run == TestConnectionEndpointIsolationAsync || t.Run == TestSlowExportDrainAsync || t.Run == TestFullProtocolAsync || t.Run == TestEventFilesAsync || t.Run == TestKcpStreamWatermarkAsync
                 || t.Run == TestInventoryCaptureAsync || t.Run == TestPlayerIdResolverAsync
@@ -76,6 +85,7 @@ internal static partial class Program
         {
             try
             {
+                Console.WriteLine("RUN " + name);
                 var stopwatch = Stopwatch.StartNew();
                 await run();
                 Results.Add($"PASS  {name}  {stopwatch.ElapsedMilliseconds} ms");

@@ -16,7 +16,8 @@ namespace ABI.Models;
 /// </summary>
 [MemoryPackable]
 public sealed partial record GameDataExportRequest(
-    [property: JsonPropertyName("scope")] GameDataExportScope Scope
+    [property: JsonPropertyName("scope")] GameDataExportScope Scope,
+    [property: JsonPropertyName("moduleIds")] string[]? ModuleIds = null
 );
 
 /// <summary>导出范围。首版只实现 <see cref="Inventory"/>，其余为预留。</summary>
@@ -67,7 +68,9 @@ public sealed partial record GameDataExportProgress(
     [property: JsonPropertyName("outputJsonPath")] string? OutputJsonPath = null,
     [property: JsonPropertyName("updateCount")] int UpdateCount = 0,
     [property: JsonPropertyName("sessionKeyAcquired")] bool SessionKeyAcquired = false,
-    [property: JsonPropertyName("eventExport")] GameDataExportEventStats? EventExport = null
+    [property: JsonPropertyName("eventExport")] GameDataExportEventStats? EventExport = null,
+    [property: JsonPropertyName("modules")] GameDataExportModuleResult[]? Modules = null,
+    [property: JsonPropertyName("captureIndexPath")] string? CaptureIndexPath = null
 );
 
 #endregion
@@ -91,7 +94,9 @@ public sealed partial record GameDataExportResult(
     [property: JsonPropertyName("playerId")] int PlayerId = 0,
     [property: JsonPropertyName("updateCount")] int UpdateCount = 0,
     [property: JsonPropertyName("playerSummaries")] GameDataExportPlayerSummary[]? PlayerSummaries = null,
-    [property: JsonPropertyName("eventExport")] GameDataExportEventStats? EventExport = null
+    [property: JsonPropertyName("eventExport")] GameDataExportEventStats? EventExport = null,
+    [property: JsonPropertyName("modules")] GameDataExportModuleResult[]? Modules = null,
+    [property: JsonPropertyName("captureIndexPath")] string? CaptureIndexPath = null
 );
 
 /// <summary>事件写入的聚合状态；不会通过 UI 管道发送消息正文。</summary>

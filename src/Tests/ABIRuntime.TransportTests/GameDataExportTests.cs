@@ -20,7 +20,7 @@ internal static partial class Program
         using var loader = new SessionKeyLoader();
         loader.LoadPrivateKeyPem(rsa.ExportPkcs8PrivateKeyPem());
         var key = RandomNumberGenerator.GetBytes(32);
-        using var state = new CaptureConnectionState(loader, GameDataExportScope.Inventory);
+        using var state = new TestCapturePipeline(loader, GameDataExportScope.Inventory);
         var stream = new KcpStreamRebuilder();
         uint sn = 0;
         uint seq = 0;

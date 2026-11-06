@@ -1,35 +1,25 @@
 using ABI.Models;
 using Haiyu.ABI.Protocol;
 using Haiyu.ABI.Services.GameDataExport.Decrypt;
-using Haiyu.ABI.Services.GameDataExport.Export;
+using Haiyu.ABI.Services.GameDataExport.Modules;
 using Haiyu.ABI.Services.GameDataExport.Protocol;
 using Haiyu.ABI.Services.GameDataExport.Rebuild;
 
 namespace Haiyu.ABI.Services.GameDataExport.Session;
 
-/// <summary>单消费者传输管线：切帧、验证、解密，向独立的背包和事件消费者分发。</summary>
+/// <summary>单消费者传输管线：切帧、验证、解密，向已注册消费者分发不可变协议模型。</summary>
 internal sealed class CaptureConnectionState : IDisposable
 {
     private readonly HashSet<string> _rawSeen = new();
     private readonly Queue<string> _rawOrder = new();
-    private readonly bool _exportEvents;
     private ProtocolJsonDecoder? _decoder;
 
-    internal CaptureConnectionState(SessionKeyLoader keyLoader, GameDataExportScope scope)
-        : this(new GameSessionContext(keyLoader), new InventoryCaptureState(scope), scope.HasFlag(GameDataExportScope.AllServerMessages)) { }
+    internal CaptureConnectionState(SessionKeyLoader keyLoader) : this(new GameSessionContext(keyLoader)) { }
 
-    private CaptureConnectionState(GameSessionContext session, InventoryCaptureState inventory, bool exportEvents)
-    {
-        Session = session;
-        Inventory = inventory;
-        _exportEvents = exportEvents;
-    }
-
+    private CaptureConnectionState(GameSessionContext session) => Session = session;
     internal GameSessionContext Session { get; }
-    internal InventoryCaptureState Inventory { get; }
     internal uint ConnectionId { get; set; }
     internal IGameMessageObserver? Observer { get; set; }
-    internal bool Ready => Session.HasVerifiedTraffic && Session.IsIdentityConfirmed && Inventory.IsComplete;
 
     internal void Consume(KcpStreamRebuilder stream)
     {
@@ -62,15 +52,14 @@ internal sealed class CaptureConnectionState : IDisposable
             }
             if (frame.MsgId == WavesMessageIds.ProtoKeyResponse)
             {
-                var identity = Session.IdentityVersion;
+                var previousSession = Session.SessionId;
                 var resolved = Session.ResolveKey(frame);
-                if (identity != Session.IdentityVersion) Inventory.Reset();
+                if (previousSession != Session.SessionId) Changed(ExportSessionChangeKind.LoginStarted, previousSession);
                 Observe(frame, frame.Payload, resolved ? null : "key_resolution_failed");
                 continue;
             }
             if (Session.SessionKey is null)
             {
-                if (!_exportEvents) return before;
                 Observe(frame, null, "key_unavailable");
                 continue;
             }
@@ -79,12 +68,15 @@ internal sealed class CaptureConnectionState : IDisposable
                 Observe(frame, null, status);
                 continue;
             }
-            if (Session.BeforeMessage(frame)) Inventory.Reset();
+            var previousIdentity = Session.SessionId;
+            if (Session.BeforeMessage(frame)) Changed(ExportSessionChangeKind.LoginStarted, previousIdentity);
             if (frame.MsgId == WavesMessageIds.BasicInfoNotify)
             {
                 try
                 {
-                    if (Session.AcceptIdentity(frame with { Payload = plain! })) Inventory.Reset();
+                    previousIdentity = Session.SessionId;
+                    Session.AcceptIdentity(frame with { Payload = plain! });
+                    if (Session.ConfirmedPlayerId is not null) Changed(ExportSessionChangeKind.IdentityResolved, previousIdentity);
                 }
                 catch (InvalidDataException)
                 {
@@ -96,13 +88,11 @@ internal sealed class CaptureConnectionState : IDisposable
             if (Observe(frame, plain, null)) Session.MarkVerified();
             if (frame.MsgId == WavesMessageIds.LogoutNotify)
             {
+                var previousSession = Session.SessionId;
                 Session.Logout();
-                Inventory.Reset();
+                Changed(ExportSessionChangeKind.Logout, previousSession);
             }
-            var applied = Inventory.Apply(frame.MsgId, plain!);
-            if (applied == InventoryMessageResult.Updated) Session.MarkVerified();
-            else if (applied == InventoryMessageResult.Invalid && !_exportEvents)
-                throw new InvalidDataException($"背包消息 {frame.MsgId} 解密或 protobuf 解析失败，未更新导出文件。");
+
         }
         return offset;
     }
@@ -111,7 +101,7 @@ internal sealed class CaptureConnectionState : IDisposable
     {
         ProtocolJsonDecoder.Result? protocol = null;
         if (status is null && plain is not null && frame.Type != GatewayMessageType.Exception
-            && (_exportEvents || !Session.HasVerifiedTraffic))
+            )
         {
             _decoder ??= new ProtocolJsonDecoder(ProtocolCatalog.Default.Value);
             protocol = _decoder.Decode(frame.MsgId, plain);
@@ -129,9 +119,12 @@ internal sealed class CaptureConnectionState : IDisposable
             player = null;
             session = "unverified-" + session + "-" + ConnectionId;
         }
-        Observer?.Observe(new(frame, plain, player, session, ConnectionId, status, protocol));
+        Observer?.Observe(new(frame, plain, player, session, ConnectionId, status, protocol, ConnectionVerified: Session.HasVerifiedTraffic || verified, ReceivedAt: DateTimeOffset.UtcNow));
         return verified;
     }
+
+    private void Changed(ExportSessionChangeKind kind, string? previous) => Observer?.SessionChanged(
+        new(kind, Session.SessionId, previous, Session.ConfirmedPlayerId, ConnectionId, Verified: Session.HasVerifiedTraffic));
 
     private void Reject(byte[] bytes, string status) =>
         Observe(new(GatewayMessageType.Invalid, 0, 0, 0, 0, 0, bytes), null, status);
@@ -148,7 +141,7 @@ internal sealed class CaptureConnectionState : IDisposable
 
     internal CaptureConnectionState ForkForReconnect()
     {
-        var next = new CaptureConnectionState(Session.ForkForReconnect(), Inventory.ForkForReconnect(), _exportEvents) { Observer = Observer };
+        var next = new CaptureConnectionState(Session.ForkForReconnect()) { Observer = Observer };
         foreach (var fingerprint in _rawOrder)
         {
             next._rawSeen.Add(fingerprint);

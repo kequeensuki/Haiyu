@@ -106,7 +106,7 @@ internal static partial class Program
         foreach (var scope in new[] { GameDataExportScope.Inventory, GameDataExportScope.Inventory | GameDataExportScope.AllServerMessages })
         {
             using var peer = new ExportPeer();
-            using var state = new CaptureConnectionState(peer.CreateLoader(), scope);
+            using var state = new TestCapturePipeline(peer.CreateLoader(), scope);
             if (scope.HasFlag(GameDataExportScope.AllServerMessages)) state.Observer = new TestMessageObserver(_ => { });
             foreach (var frame in peer.Login(111)) state.ConsumeRaw(frame);
             Equal(true, state.Ready);
@@ -144,7 +144,7 @@ internal static partial class Program
 
         // 是否确认重连由协议管线决定，不依赖事件写入器的返回值。
         using var peer = new ExportPeer();
-        using var connection = new CaptureConnectionState(peer.CreateLoader(), GameDataExportScope.Inventory);
+        using var connection = new TestCapturePipeline(peer.CreateLoader(), GameDataExportScope.Inventory);
         foreach (var frame in peer.Login(111)) connection.ConsumeRaw(frame);
         connection.Observer = new TestMessageObserver(_ => { });
         try
@@ -165,7 +165,7 @@ internal static partial class Program
     private static async Task TestFrameValidationAsync()
     {
         using var peer = new ExportPeer();
-        using (var pending = new CaptureConnectionState(peer.CreateLoader(), GameDataExportScope.Inventory))
+        using (var pending = new TestCapturePipeline(peer.CreateLoader(), GameDataExportScope.Inventory))
         {
             var corruptKey = peer.KeyFrame();
             corruptKey[10] ^= 1;
@@ -173,7 +173,7 @@ internal static partial class Program
             Equal(true, pending.Session.SessionKey is null);
             Equal(false, pending.Session.HasVerifiedTraffic);
         }
-        using var state = new CaptureConnectionState(peer.CreateLoader(), GameDataExportScope.Inventory);
+        using var state = new TestCapturePipeline(peer.CreateLoader(), GameDataExportScope.Inventory);
         foreach (var frame in peer.Login(111)) state.ConsumeRaw(frame);
         var failures = new List<string>();
         state.Observer = new TestMessageObserver(m => { if (m.Status is not null) failures.Add(m.Status); });
@@ -212,7 +212,7 @@ internal static partial class Program
         try
         {
             var events = new EventExportSession(root);
-            using var noKey = new CaptureConnectionState(new SessionKeyLoader(), GameDataExportScope.AllServerMessages);
+            using var noKey = new TestCapturePipeline(new SessionKeyLoader(), GameDataExportScope.AllServerMessages);
             noKey.Observer = events;
             byte[] control = [11, 0, 0, 3, 1, 0, 0, 0, 2, 0, 0x39, 0x30, 0, 0];
             noKey.ConsumeRaw(control);

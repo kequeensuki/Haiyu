@@ -1,73 +1,68 @@
-using System.Diagnostics;
 using System.Text.Json;
-using System.Threading.Channels;
 using ABI.Models;
 using Haiyu.ABI.Services.GameDataExport.Decrypt;
 using Haiyu.ABI.Services.GameDataExport.Protocol;
 using Haiyu.ABI.Services.GameDataExport.Session;
+using Haiyu.ABI.Services.GameDataExport.Storage;
 
 namespace Haiyu.ABI.Services.GameDataExport.Events;
-/// <summary>单写入者的有界 JSONL 事件流。捕获线程只投递完整事件；磁盘失败/溢出明确停止，不静默丢弃。</summary>
-internal sealed class EventExportSession : IGameMessageObserver
+
+/// <summary>事件格式和玩家归属投影；队列、容量和文件句柄由共享输出层负责。</summary>
+internal sealed class EventExportSession : IGameMessageObserver, IAsyncDisposable
 {
     internal sealed record Limits(int QueueBytes = 32 * 1024 * 1024, int QueueItems = 512, long ShardBytes = 128L * 1024 * 1024, long CaptureBytes = 1024L * 1024 * 1024, int OpenFiles = 16);
-    private sealed record Envelope(byte[]? Bytes, int? Player, string Session, string Status, bool Bind = false);
-    private sealed class Output(string path, FileStream stream)
-    {
-        internal string Path = path;
-        internal FileStream Stream = stream;
-        internal long Bytes;
-    }
-
+    private sealed record Envelope(byte[] Bytes, int? Player, string Session, string Status);
     private readonly object _gate = new();
-    private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
+    private readonly DateTimeOffset _startedAt;
     private readonly ProtocolCatalog _catalog = ProtocolCatalog.Default.Value;
-    private readonly Channel<Envelope> _queue;
+    private readonly JsonExportStore _output;
+    private readonly string _moduleId;
+    private readonly string _manifestRelative;
+    private readonly JsonLinesArtifactWriter _lines;
+    private readonly bool _ownsStore;
     private readonly Limits _limits;
-    private readonly string _root;
-    private readonly Dictionary<string, Output> _outputs = new();
-    private readonly Dictionary<string, int> _shards = new();
-    private readonly List<string> _files = [];
     private readonly Dictionary<string, int> _bindings = new();
-    private readonly Dictionary<string, int> _announced = new();
     private readonly Dictionary<string, long> _statuses = new();
     private readonly Dictionary<int, GameDataExportPlayerEventStats> _players = new();
     private readonly Dictionary<string, GameDataExportPlayerEventStats> _pending = new();
-    private readonly Task _worker;
-    private long _index, _received, _written, _decoded, _unknown, _failed, _unresolved, _dropped, _bytes, _queued;
+    private long _index, _received, _written, _decoded, _unknown, _failed, _unresolved, _dropped, _bytes;
     private string? _error;
     private bool _finished;
-    internal string CaptureId { get; } = DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfff", System.Globalization.CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N");
+    internal string CaptureId { get; }
     internal string ManifestPath { get; }
+    internal IReadOnlyList<string> Files => _lines.Files;
 
     internal EventExportSession(string root, Limits? limits = null)
-    {
-        _root = root;
-        _limits = limits ?? new();
-        _queue = Channel.CreateBounded<Envelope>(new BoundedChannelOptions(_limits.QueueItems) { SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.Wait });
-        ManifestPath = Path.Combine(root, "captures", CaptureId, "manifest.json");
-        Directory.CreateDirectory(Path.GetDirectoryName(ManifestPath)!);
-        WriteManifest(false);
-        _worker = Task.Run(WriteAsync);
-    }
+        : this(new JsonExportStore(root, new((limits ?? new()).QueueBytes, (limits ?? new()).QueueItems, (limits ?? new()).CaptureBytes)),
+            DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfff", System.Globalization.CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N"), limits, true) { }
 
+    internal EventExportSession(JsonExportStore output, string captureId, Limits? limits = null, bool ownsStore = false, string moduleId = "server-messages", string? partition = null, DateTimeOffset? startedAt = null)
+    {
+        _startedAt = startedAt ?? DateTimeOffset.UtcNow;
+        _output = output; _moduleId = moduleId; CaptureId = captureId; _ownsStore = ownsStore; _limits = limits ?? new();
+        _manifestRelative = Path.Combine("captures", captureId, partition ?? "", "manifest.json");
+        ManifestPath = output.Resolve(_manifestRelative);
+        _lines = new(output, (key, shard) => key == "unresolved"
+            ? Path.Combine("captures", captureId, partition ?? "", $"unresolved-{shard:D6}.jsonl")
+            : Path.Combine(key, "captures", captureId, partition ?? "", $"events-{shard:D6}.jsonl"), _limits.ShardBytes, _limits.OpenFiles);
+        _output.QueueMetadata(_manifestRelative, EncodeManifest(false));
+    }
     internal void ThrowIfFailed()
     {
-        lock (_gate)
-            if (_error != null)
-                throw new IOException(_error);
+        _output.DrainReceipts();
+        _output.ThrowIfFailed();
+        if (_error is not null) throw new IOException(_error);
     }
-
     public void Observe(MessageObservation message) => Publish(message.Frame, message.Plain, message.PlayerId,
-        message.SessionId, message.ConnectionId, message.Status, message.Protocol);
-
+        message.SessionId, message.ConnectionId, message.Status, message.Protocol, message.EventIndex, message.ReceivedAt);
     private void Publish(GatewayFrame frame, byte[]? plain, int? player, string session, uint connection,
-        string? status, ProtocolJsonDecoder.Result? decoded)
+        string? status, ProtocolJsonDecoder.Result? decoded, long eventIndex = 0, DateTimeOffset? receivedAt = null)
     {
         ThrowIfFailed();
         lock (_gate) _received++;
         if ((plain ?? frame.Payload).Length > _limits.QueueBytes / 2)
             throw new IOException("单条消息超过事件导出的内存预算，已停止捕获。");
+        var encoded = decoded?.Json;
         status ??= frame.Type == GatewayMessageType.Exception ? "transport_exception" : decoded?.Status ?? "key_unavailable";
         if (frame.Type == GatewayMessageType.Exception && decoded is not null)
             status = "transport_exception";
@@ -77,7 +72,8 @@ internal sealed class EventExportSession : IGameMessageObserver
             json.WriteStartObject();
             json.WriteString("captureId", CaptureId);
             json.WriteNumber("eventIndex", ++_index);
-            json.WriteString("receivedAt", DateTimeOffset.UtcNow);
+            if (eventIndex > 0) json.WriteNumber("captureEventIndex", eventIndex);
+            json.WriteString("receivedAt", receivedAt ?? DateTimeOffset.UtcNow);
             json.WriteString("sessionId", session);
             json.WriteNumber("connectionId", connection);
             if (player is { } id)
@@ -101,11 +97,11 @@ internal sealed class EventExportSession : IGameMessageObserver
             json.WriteString("decodeStatus", status);
             json.WriteBoolean("hasUnknownFields", decoded?.HasUnknownFields ?? false);
             json.WritePropertyName("payload");
-            if (decoded?.Json is { } payload)
+            if (encoded is { } payload)
                 json.WriteRawValue(payload, skipInputValidation: true);
             else
                 json.WriteNullValue();
-            if (decoded?.Json == null || decoded.HasUnknownFields)
+            if (encoded == null || decoded.HasUnknownFields)
             {
                 json.WriteString("rawEncoding", frame.Type == GatewayMessageType.Invalid ? "gateway_fragment"
                     : frame.Type == GatewayMessageType.Exception ? "transport_control"
@@ -118,235 +114,114 @@ internal sealed class EventExportSession : IGameMessageObserver
             json.WriteEndObject();
         }
 
-        var bytes = buffer.ToArray();
-        Enqueue(new(bytes, player, session, status));
+        var bytes = new byte[buffer.Length + 1];
+        buffer.ToArray().CopyTo(bytes, 0);
+        bytes[^1] = 10;
+        try
+        {
+            _output.Enqueue(_moduleId, "event-stream/" + CaptureId + "/" + Uri.EscapeDataString(_moduleId), CaptureId, _index, bytes,
+                async data => await _lines.AppendAsync(player?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unresolved", data).ConfigureAwait(false),
+                receipt => Written(new(bytes, player, session, status), receipt), true);
+        }
+        catch (IOException ex) { lock (_gate) { _error ??= ex.Message; _dropped++; } throw; }
     }
 
     public void Bind(string session, int player)
     {
-        if (_announced.TryGetValue(session, out var previous) && previous == player)
-            return;
-        if (_announced.Count >= 4096)
-            throw new IOException("本次捕获的登录会话数量达到上限。");
-        Enqueue(new(null, player, session, "", true));
-        _announced[session] = player;
+        _output.DrainReceipts();
+        if (_bindings.TryGetValue(session, out var oldBinding))
+        { if (oldBinding != player) throw new InvalidDataException("事件会话归属冲突。"); return; }
+        if (_bindings.Count >= 4096) throw new IOException("本次捕获的登录会话数量达到上限。");
+        _bindings.Add(session, player);
+        if (_pending.Remove(session, out var pending))
+        {
+            _unresolved -= pending.Written;
+            var old = _players.GetValueOrDefault(player) ?? new(player, 0, 0, 0, 0);
+            _players[player] = new(player, old.Written + pending.Written, old.Decoded + pending.Decoded,
+                old.Unknown + pending.Unknown, old.Failed + pending.Failed);
+        }
     }
-
-    internal void Checkpoint() => Enqueue(new(null, null, "", ""));
-    private void Enqueue(Envelope item)
+    internal void Checkpoint()
     {
-        var size = item.Bytes?.Length ?? 0;
+        _output.DrainReceipts();
+        _output.Enqueue(_moduleId, "flush/" + CaptureId + "/" + Uri.EscapeDataString(_moduleId), CaptureId, 0, [], async _ =>
+        { await _lines.FlushAsync().ConfigureAwait(false); return ManifestPath; }, _ => { }, true);
+        _output.QueueMetadata(_manifestRelative, EncodeManifest(false));
+    }
+    private void Written(Envelope item, OutputReceipt receipt)
+    {
+        if (receipt.Error is not null) { _error ??= receipt.Error; return; }
         lock (_gate)
         {
-            if (_error != null)
-                throw new IOException(_error);
-            if (_queued + size > _limits.QueueBytes || !_queue.Writer.TryWrite(item))
+            _bytes += item.Bytes.Length;
+            _written++;
+            var good = item.Status.StartsWith("decoded", StringComparison.Ordinal);
+            var unknown = item.Status == "unknown_message";
+            if (good)
+                _decoded++;
+            else if (unknown)
+                _unknown++;
+            else
+                _failed++;
+            _statuses[item.Status] = _statuses.GetValueOrDefault(item.Status) + 1;
+            var owner = item.Player ?? (_bindings.TryGetValue(item.Session, out var bound) ? bound : (int? )null);
+            if (owner is { } id)
             {
-                _dropped += item.Bytes == null ? 0 : 1;
-                _error = "事件导出队列已满，已停止捕获；请检查磁盘写入速度。";
-                throw new IOException(_error);
+                var p = _players.GetValueOrDefault(id) ?? new(id, 0, 0, 0, 0);
+                _players[id] = p with
+                {
+                    Written = p.Written + 1,
+                    Decoded = p.Decoded + (good ? 1 : 0),
+                    Unknown = p.Unknown + (unknown ? 1 : 0),
+                    Failed = p.Failed + (!good && !unknown ? 1 : 0)
+                };
+            }
+            else
+            {
+                if (_pending.Count >= 4096)
+                    throw new IOException("待归属会话数量达到上限。");
+                _unresolved++;
+                var p = _pending.GetValueOrDefault(item.Session) ?? new(0, 0, 0, 0, 0);
+                _pending[item.Session] = p with
+                {
+                    Written = p.Written + 1,
+                    Decoded = p.Decoded + (good ? 1 : 0),
+                    Unknown = p.Unknown + (unknown ? 1 : 0),
+                    Failed = p.Failed + (!good && !unknown ? 1 : 0)
+                };
             }
 
-            _queued += size;
         }
     }
-
-    private async Task WriteAsync()
-    {
-        try
-        {
-            await foreach (var item in _queue.Reader.ReadAllAsync())
-            {
-                if (item.Bind)
-                {
-                    lock (_gate)
-                    {
-                        var id = item.Player!.Value;
-                        _bindings[item.Session] = id;
-                        if (_pending.Remove(item.Session, out var pending))
-                        {
-                            _unresolved -= pending.Written;
-                            var old = _players.GetValueOrDefault(id) ?? new(id, 0, 0, 0, 0);
-                            _players[id] = new(id, old.Written + pending.Written, old.Decoded + pending.Decoded, old.Unknown + pending.Unknown, old.Failed + pending.Failed);
-                        }
-                    }
-
-                    continue;
-                }
-
-                if (item.Bytes == null)
-                {
-                    await FlushAsync();
-                    WriteManifest(false);
-                    continue;
-                }
-
-                try
-                {
-                    if (_bytes + item.Bytes.Length + 1 > _limits.CaptureBytes)
-                        throw new IOException("事件导出达到本次捕获的磁盘容量上限。");
-                    var key = item.Player?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unresolved";
-                    var output = await GetOutputAsync(key, item.Bytes.Length + 1);
-                    await output.Stream.WriteAsync(item.Bytes);
-                    await output.Stream.WriteAsync(new byte[] { 10 });
-                    output.Bytes += item.Bytes.Length + 1;
-                    lock (_gate)
-                    {
-                        _bytes += item.Bytes.Length + 1;
-                        _written++;
-                        var good = item.Status.StartsWith("decoded", StringComparison.Ordinal);
-                        var unknown = item.Status == "unknown_message";
-                        if (good)
-                            _decoded++;
-                        else if (unknown)
-                            _unknown++;
-                        else
-                            _failed++;
-                        _statuses[item.Status] = _statuses.GetValueOrDefault(item.Status) + 1;
-                        var owner = item.Player ?? (_bindings.TryGetValue(item.Session, out var bound) ? bound : (int? )null);
-                        if (owner is { } id)
-                        {
-                            var p = _players.GetValueOrDefault(id) ?? new(id, 0, 0, 0, 0);
-                            _players[id] = p with
-                            {
-                                Written = p.Written + 1,
-                                Decoded = p.Decoded + (good ? 1 : 0),
-                                Unknown = p.Unknown + (unknown ? 1 : 0),
-                                Failed = p.Failed + (!good && !unknown ? 1 : 0)
-                            };
-                        }
-                        else
-                        {
-                            if (_pending.Count >= 4096)
-                                throw new IOException("待归属会话数量达到上限。");
-                            _unresolved++;
-                            var p = _pending.GetValueOrDefault(item.Session) ?? new(0, 0, 0, 0, 0);
-                            _pending[item.Session] = p with
-                            {
-                                Written = p.Written + 1,
-                                Decoded = p.Decoded + (good ? 1 : 0),
-                                Unknown = p.Unknown + (unknown ? 1 : 0),
-                                Failed = p.Failed + (!good && !unknown ? 1 : 0)
-                            };
-                        }
-                    }
-                }
-                finally
-                {
-                    lock (_gate)
-                        _queued -= item.Bytes.Length;
-                }
-            }
-
-            await FlushAsync();
-        }
-        catch (Exception ex)when (ex is IOException or UnauthorizedAccessException or JsonException)
-        {
-            lock (_gate)
-                _error ??= "事件文件写入失败：" + ex.Message;
-        }
-        finally
-        {
-            foreach (var output in _outputs.Values)
-                try
-                {
-                    await output.Stream.DisposeAsync();
-                }
-                catch (IOException ex)
-                {
-                    lock (_gate)
-                        _error ??= "事件文件关闭失败：" + ex.Message;
-                }
-
-            _outputs.Clear();
-            while (_queue.Reader.TryRead(out _))
-            {
-            }
-        }
-    }
-
-    private async Task<Output> GetOutputAsync(string key, int nextSize)
-    {
-        if (_outputs.TryGetValue(key, out var existing) && existing.Bytes + nextSize <= _limits.ShardBytes)
-            return existing;
-        if (existing != null)
-        {
-            await existing.Stream.DisposeAsync();
-            _outputs.Remove(key);
-        }
-
-        if (_outputs.Count >= _limits.OpenFiles)
-        {
-            var first = _outputs.First();
-            await first.Value.Stream.DisposeAsync();
-            _outputs.Remove(first.Key);
-        }
-
-        var directory = key == "unresolved" ? Path.GetDirectoryName(ManifestPath)! : Path.Combine(_root, key, "captures", CaptureId);
-        Directory.CreateDirectory(directory);
-        var shard = _shards.GetValueOrDefault(key) + 1;
-        _shards[key] = shard;
-        var path = Path.Combine(directory, $"{(key == "unresolved" ? "unresolved" : "events")}-{shard:D6}.jsonl");
-        var result = new Output(path, new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read, 65536, FileOptions.Asynchronous | FileOptions.SequentialScan));
-        if (_files.Count >= 4096)
-        {
-            await result.Stream.DisposeAsync();
-            throw new IOException("事件分片数量达到上限。");
-        }
-
-        _outputs[key] = result;
-        _files.Add(Path.GetRelativePath(_root, path).Replace('\\', '/'));
-        return result;
-    }
-
-    private async Task FlushAsync()
-    {
-        foreach (var output in _outputs.Values)
-            await output.Stream.FlushAsync();
-    }
-
     internal GameDataExportEventStats Snapshot()
     {
-        lock (_gate)
-            return new(CaptureId, ManifestPath, _received, _written, _decoded, _unknown, _failed, _unresolved, _dropped, _bytes, _finished && _error == null, _error, _players.Values.OrderBy(p => p.PlayerId).ToArray());
+        _output.DrainReceipts();
+        lock (_gate) return new(CaptureId, ManifestPath, _received, _written, _decoded, _unknown, _failed, _unresolved,
+            _dropped, _bytes, _finished && _error is null, _error, _players.Values.OrderBy(p => p.PlayerId).ToArray());
     }
-
     internal async Task<GameDataExportEventStats> FinishAsync(string? error)
     {
-        lock (_gate)
-            _error ??= error;
-        _queue.Writer.TryComplete();
-        await _worker;
-        lock (_gate)
-        {
-            _finished = true;
-            _dropped = Math.Max(_dropped, _received - _written);
-            if (_received != _written)
-                _error ??= "事件队列未完全写入，捕获结果不完整。";
-        }
-
-        try
-        {
-            WriteManifest(true);
-        }
-        catch (Exception ex)when (ex is IOException or UnauthorizedAccessException)
-        {
-            lock (_gate)
-                _error ??= "捕获索引写入失败：" + ex.Message;
-        }
-
+        if (_finished) return Snapshot();
+        _error ??= error;
+        await _output.FlushAsync().ConfigureAwait(false);
+        try { await _lines.DisposeAsync().ConfigureAwait(false); }
+        catch (IOException ex) { _error ??= ex.Message; }
+        _finished = true;
+        _dropped = Math.Max(_dropped, _received - _written);
+        if (_received != _written) _error ??= "事件队列未完全写入，捕获结果不完整。";
+        try { await _output.MetadataAsync(_manifestRelative, EncodeManifest(true)).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { _error ??= ex.Message; }
         return Snapshot();
     }
-
-    private void WriteManifest(bool ended)
+    private byte[] EncodeManifest(bool ended)
     {
         var stats = Snapshot();
-        var tmp = ManifestPath + ".tmp";
-        using (var stream = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
-        using (var json = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+        using var buffer = new MemoryStream();
+        using (var json = new Utf8JsonWriter(buffer, new JsonWriterOptions { Indented = true }))
         {
             json.WriteStartObject();
             json.WriteString("captureId", CaptureId);
+            json.WriteString("moduleId", _moduleId);
             json.WriteString("schemaVersion", _catalog.Version);
             json.WriteString("sourceCommit", _catalog.SourceCommit);
             json.WriteString("state", ended ? (stats.Complete ? "completed" : "incomplete") : "running");
@@ -375,7 +250,7 @@ internal sealed class EventExportSession : IGameMessageObserver
                 json.WriteNumber(status, count);
             json.WriteEndObject();
             json.WriteStartArray("files");
-            foreach (var file in _files)
+            foreach (var file in _lines.Files)
                 json.WriteStringValue(file);
             json.WriteEndArray();
             json.WriteStartArray("players");
@@ -392,8 +267,13 @@ internal sealed class EventExportSession : IGameMessageObserver
 
             json.WriteEndArray();
             json.WriteEndObject();
-        }
 
-        File.Move(tmp, ManifestPath, true);
+        }
+        return buffer.ToArray();
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (!_finished) await FinishAsync("捕获未正常结束。").ConfigureAwait(false);
+        if (_ownsStore) await _output.DisposeAsync().ConfigureAwait(false);
     }
 }

@@ -77,5 +77,47 @@ class ValidatorTests(unittest.TestCase):
             VALIDATOR.validate(self.manifest)
 
 
+    def test_capture_index_and_artifacts(self):
+        self.write()
+        inventory = self.root / "123" / "data.json"
+        inventory.parent.mkdir()
+        inventory.write_text('{"items": []}', encoding="utf-8")
+        index = self.manifest.with_name("capture-index.json")
+        info = dict(formatVersion=1, captureId="test", state="completed", error=None, modules=[
+            dict(moduleId="inventory", state="Completed", error=None, artifacts=[
+                dict(moduleId="inventory", path=str(inventory), format="json", sources=[
+                    dict(sourceId="items", required=True, localVersion=1)])]),
+            dict(moduleId="server-messages", state="Completed", error=None, artifacts=[
+                dict(moduleId="server-messages", path=str(self.manifest), format="manifest", sources=[])])])
+        index.write_text(json.dumps(info), encoding="utf-8")
+        self.assertEqual((2, 2), VALIDATOR.validate_capture_index(index))
+        info["modules"][0]["state"] = "Incomplete"
+        index.write_text(json.dumps(info), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            VALIDATOR.validate_capture_index(index)
+
+    def test_capture_index_rejects_invalid_source_and_missing_file(self):
+        index = self.manifest.with_name("capture-index.json")
+        artifact = dict(moduleId="test", path="missing.json", format="json", sources=[])
+        info = dict(formatVersion=1, captureId="test", state="completed", modules=[
+            dict(moduleId="test", state="Completed", artifacts=[artifact])])
+        index.write_text(json.dumps(info), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            VALIDATOR.validate_capture_index(index)
+        file = self.root / "valid.json"
+        file.write_text("{}", encoding="utf-8")
+        artifact.update(path=str(file), sources=[dict(sourceId="items", required=True, localVersion=0)])
+        index.write_text(json.dumps(info), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            VALIDATOR.validate_capture_index(index)
+
+    def test_module_scoped_manifest(self):
+        self.write()
+        nested = self.manifest.parent / "modules" / "filtered" / "manifest.json"
+        nested.parent.mkdir(parents=True)
+        nested.write_text(json.dumps(self.info), encoding="utf-8")
+        totals, players, files = VALIDATOR.validate(nested)
+        self.assertEqual((1, 1, 1), (totals["written"], players, files))
+
 if __name__ == "__main__":
     unittest.main()

@@ -154,6 +154,14 @@ public static class InventoryJsonWriter
         }
     }
 
+    internal static byte[] Encode(GameDataExportResult result, DateTimeOffset timestamp)
+    {
+        using var document = BuildDocument(result, timestamp);
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer, WriterOptions)) document.WriteTo(writer);
+        return buffer.ToArray();
+    }
+
     private static JsonDocument BuildDocument(
         GameDataExportResult result,
         DateTimeOffset timestamp

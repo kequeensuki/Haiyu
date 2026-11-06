@@ -60,7 +60,7 @@ internal static partial class Program
         Equal("unknown_message", decoder.Decode(65535, [8, 1]).Status);
         Equal("parse_failed", decoder.Decode(guide, [42, 127, 1]).Status);
         Equal("parse_failed", decoder.Decode(guide, [0]).Status);
-        using var state = new CaptureConnectionState(new SessionKeyLoader(), GameDataExportScope.None);
+        using var state = new TestCapturePipeline(new SessionKeyLoader(), GameDataExportScope.None);
         var faults = new List<string>();
         state.Observer = new TestMessageObserver(m => faults.Add(m.Status!));
         var invalid = new byte[14]; invalid[0] = 11;
@@ -125,7 +125,7 @@ internal static partial class Program
             keyLoader.LoadPrivateKeyPem(rsa.ExportPkcs8PrivateKeyPem());
             keyLoader.TryResolve(new(GatewayMessageType.Push,4,1,0,112,0,
                 new ProtoKeyResponse { Key = ByteString.CopyFrom(rsa.Encrypt(new byte[32], RSAEncryptionPadding.Pkcs1)) }.ToByteArray()));
-            using var parent = new CaptureConnectionState(keyLoader, GameDataExportScope.Inventory | GameDataExportScope.AllServerMessages);
+            using var parent = new TestCapturePipeline(keyLoader, GameDataExportScope.Inventory | GameDataExportScope.AllServerMessages);
             parent.Session.PlayerId.TryFeed(new(GatewayMessageType.Push,4,1,0,15380,0,new BasicInfoNotify{Id=123}.ToByteArray()));
             uint gatewaySequence = 0;
             parent.Observer = new TestMessageObserver(_ => { });

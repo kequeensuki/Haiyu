@@ -104,4 +104,9 @@ public static class Contract
             ABIJsonContext.Default.GameDataExportResult,
             WaitForCompletionOnCancellation: true
         );
+    public static PrivilegedServiceContract<GameDataExportModuleCatalogRequest, GameDataExportProgress, GameDataExportModuleCatalogResult>
+        GameDataExportModuleCatalogContract => new("haiyu.gameDataExport.modules.v1",
+            ABIJsonContext.Default.GameDataExportModuleCatalogRequest,
+            ABIJsonContext.Default.GameDataExportProgress,
+            ABIJsonContext.Default.GameDataExportModuleCatalogResult);
 }

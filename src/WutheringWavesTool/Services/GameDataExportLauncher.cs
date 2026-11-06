@@ -12,7 +12,7 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
         internal readonly TaskCompletionSource<bool> Ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal Task<GameDataExportResult> Task = null!;
         internal bool Active = true;
-        internal GameDataExportScope Scope;
+        internal GameDataExportRequest Request = new(GameDataExportScope.Inventory);
         internal long? KeyWaitStartedAt;
         internal bool SessionKeyAcquired;
         internal string? StopReason;
@@ -20,7 +20,7 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
     }
 
     private readonly object _gate = new();
-    private readonly Func<GameDataExportScope, IProgress<IPrivilegedProgress<GameDataExportProgress>>, CancellationToken, Task<GameDataExportResult>> _invoke;
+    private readonly Func<GameDataExportRequest, IProgress<IPrivilegedProgress<GameDataExportProgress>>, CancellationToken, Task<GameDataExportResult>> _invoke;
     private readonly Func<bool> _isGameRunning;
     private readonly TimeProvider _clock;
     private readonly TimeSpan _keyWaitTimeout;
@@ -48,7 +48,7 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
         TimeSpan? keyWaitTimeout = null, TimeSpan? probeInterval = null,
         TimeSpan? readyTimeout = null, TimeSpan? stopGrace = null)
     {
-        _invoke = invoke;
+        _invoke = (request, progress, token) => invoke(request.Scope, progress, token);
         _isGameRunning = isGameRunning;
         _clock = clock ?? TimeProvider.System;
         _keyWaitTimeout = keyWaitTimeout ?? TimeSpan.FromMinutes(30);
@@ -57,17 +57,30 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
         _stopGrace = stopGrace ?? TimeSpan.FromSeconds(10);
     }
 
+    internal GameDataExportLauncher(bool moduleRequests,
+        Func<GameDataExportRequest, IProgress<IPrivilegedProgress<GameDataExportProgress>>, CancellationToken, Task<GameDataExportResult>> invoke,
+        Func<bool> isGameRunning, TimeProvider? clock = null)
+        : this((_, progress, token) => invoke(new GameDataExportRequest(GameDataExportScope.Inventory), progress, token), isGameRunning, clock)
+    { _invoke = invoke; }
+
     public (string Message, int Percentage)? LastProgress { get { lock (_gate) return _lastProgress; } }
     public GameDataExportProgress? LastBusinessProgress { get { lock (_gate) return _lastBusinessProgress; } }
     public GameDataExportResult? LastResult { get { lock (_gate) return _lastResult; } }
-    public GameDataExportScope CurrentScope { get { lock (_gate) return _session?.Scope ?? GameDataExportScope.Inventory; } }
+    public GameDataExportScope CurrentScope { get { lock (_gate) return _session?.Request.Scope ?? GameDataExportScope.Inventory; } }
+    public string[]? CurrentModuleIds { get { lock (_gate) return _session?.Request.ModuleIds?.ToArray(); } }
     public bool IsSessionActive { get { lock (_gate) return _session is { Active: true }; } }
     public event Action<string, int>? ProgressChanged;
     public event Action<GameDataExportResult>? SessionEnded;
     public event Action? StateChanged;
 
     public bool TryStart(out Task<GameDataExportResult> sessionTask, GameDataExportScope scope = GameDataExportScope.Inventory)
+        => TryStart(out sessionTask, new GameDataExportRequest(scope));
+
+    public bool TryStart(out Task<GameDataExportResult> sessionTask, GameDataExportRequest request)
     {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.ModuleIds is { Length: 0 }) throw new ArgumentException("请至少选择一个导出模块。");
+        request = request with { ModuleIds = request.ModuleIds?.ToArray() };
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -81,7 +94,7 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
             {
                 KeyWaitStartedAt = running ? _clock.GetTimestamp() : null,
                 SawGameProcess = running,
-                Scope = scope
+                Request = request
             };
             _session = session;
             _lastProgress = null;
@@ -102,7 +115,7 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
         {
             // 同步接收传输回调，避免 Progress<T> 的线程池排队让就绪信号晚于结果。
             var progress = new InlineProgress(p => OnProgress(session, p));
-            result = await _invoke(session.Scope, progress, session.Stop.Token).ConfigureAwait(false);
+            result = await _invoke(session.Request, progress, session.Stop.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

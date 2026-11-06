@@ -9,6 +9,8 @@ using Haiyu.ABI.Services.GameDataExport.Protocol;
 using Haiyu.ABI.Services.GameDataExport.Rebuild;
 using Haiyu.ABI.Services.GameDataExport.Session;
 using MemoryPack;
+using Haiyu.ABI.Services.GameDataExport.Modules;
+using Haiyu.ABI.Services.GameDataExport.Storage;
 
 var watch = System.Diagnostics.Stopwatch.StartNew();
 ABIMemoryPack.EnsureFormatters();
@@ -23,13 +25,21 @@ if (decoder.Decode(id, [26, 4, 8, 1, 16, 2]).Status != "decoded")
 var root = Path.Combine(Path.GetTempPath(), "haiyu-protocol-smoke-" + Guid.NewGuid().ToString("N"));
 try
 {
-    var events = new EventExportSession(root);
+    var context = new ExportCaptureContext(new JsonExportStore(root));
+    var filtered = new GameDataExportModuleDescriptor("basic-info-events", "basic", "Basic info", false, false);
+    var registry = new ExportModuleRegistry([
+        new(InventoryExportModule.Definition, c => new InventoryExportModule(c)),
+        new(ServerMessagesExportModule.Definition, c => new ServerMessagesExportModule(c)),
+        new(filtered, c => new ServerMessagesExportModule(c, descriptor: filtered,
+            messageIds: new HashSet<ushort> { WavesMessageIds.BasicInfoNotify }))
+    ]);
+    await using var coordinator = new ExportCoordinator(context, registry, ["inventory", "server-messages", filtered.Id]);
     using var rsa = RSA.Create(2048);
     var key = RandomNumberGenerator.GetBytes(32);
     var loader = new SessionKeyLoader();
     loader.LoadPrivateKeyPem(rsa.ExportPkcs8PrivateKeyPem());
-    using var capture = new CaptureConnectionState(loader, GameDataExportScope.Inventory | GameDataExportScope.AllServerMessages)
-    { Observer = events, ConnectionId = 1 };
+    using var capture = new CaptureConnectionState(loader)
+    { Observer = coordinator, ConnectionId = 1 };
     uint sequence = 0;
     byte[] Frame(ushort msgId, byte[] plain)
     {
@@ -55,13 +65,14 @@ try
     capture.ConsumeRaw(Frame(WavesMessageIds.WeaponItemResponse, []));
     capture.ConsumeRaw(Frame(WavesMessageIds.PhantomItemResponse, []));
     capture.ConsumeRaw(Frame(WavesMessageIds.ValidTimeItemResponse, []));
-    if (!capture.Ready || capture.Inventory.DecodedFrames != 4 || capture.Session.PlayerId.PlayerId != 123)
-        throw new Exception("capture session pipeline failed");
-    var stats = await events.FinishAsync(null);
-    var wire = MemoryPackSerializer.Serialize(stats, ABIMemoryPack.Options);
-    var round = MemoryPackSerializer.Deserialize<GameDataExportEventStats>(wire, ABIMemoryPack.Options)!;
-    if (!round.Complete || round.Written != 6 || !File.Exists(round.ManifestPath))
-        throw new Exception("event or AOT ABI serialization failed");
+    context.RememberLegacyMetadata(capture.Session);
+    var modules = await coordinator.FinishAsync(new(null, false));
+    var result = coordinator.LegacyResult(modules);
+    var wire = MemoryPackSerializer.Serialize(result, ABIMemoryPack.Options);
+    var round = MemoryPackSerializer.Deserialize<GameDataExportResult>(wire, ABIMemoryPack.Options)!;
+    if (!round.Success || round.Modules?.Length != 3 || round.EventExport?.Written != 6
+        || round.Inventory?.NormalItems.Single().Count != 2 || !File.Exists(round.CaptureIndexPath)
+        || !File.Exists(round.OutputJsonPath)) throw new Exception("module lifecycle or AOT ABI serialization failed");
     Console.WriteLine($"PASS NativeAOT protocol smoke: messages={catalog.Messages.Count}, registered={catalog.Ids.Count}, elapsedMs={watch.ElapsedMilliseconds}, managedBytes={GC.GetTotalMemory(true)}");
 }
 finally

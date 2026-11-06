@@ -13,6 +13,9 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <Compile Include="../../WutheringWavesTool/Services/Contracts/IGameDataExportKeyService.cs" Link="IGameDataExportKeyService.cs" />
     <Compile Include="../../WutheringWavesTool/Services/GameDataExportKeyService.cs" Link="GameDataExportKeyService.cs" />
+    <Compile Include="../../WutheringWavesTool/Services/GameDataExportCatalogService.cs" Link="GameDataExportCatalogService.cs" />
+    <Compile Include="../../WutheringWavesTool/Services/Contracts/IGameDataExportCatalogService.cs" Link="IGameDataExportCatalogService.cs" />
+    <Compile Include="../../WutheringWavesTool/ViewModel/ToolkitsViewModel/GameDataExportModuleSelection.cs" Link="GameDataExportModuleSelection.cs" />
     <!-- 链接实际会话和 VM 逻辑；Windows ABI 启动、窗口 API 由测试边界替身提供。 -->
     <Compile Include="../../WutheringWavesTool/Services/GameDataExportLauncher.cs" Link="GameDataExportLauncher.cs" />
     <Compile Include="../../WutheringWavesTool/Services/GameDataExportLauncher.Windows.cs" Link="GameDataExportLauncher.Windows.cs" />

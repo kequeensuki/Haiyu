@@ -41,6 +41,13 @@ public static class ABIMemoryPack
         MemoryPackFormatterProvider.Register<OpenRequestMessage>();
 
         // 游戏数据导出（管道传输体，AOT 下必须显式注册全部 MemoryPackable 类型）
+        MemoryPackFormatterProvider.Register<GameDataExportModuleDescriptor>();
+        MemoryPackFormatterProvider.Register<GameDataExportModuleCatalogRequest>();
+        MemoryPackFormatterProvider.Register<GameDataExportModuleCatalogResult>();
+        MemoryPackFormatterProvider.Register<GameDataExportCounter>();
+        MemoryPackFormatterProvider.Register<GameDataExportSourceProgress>();
+        MemoryPackFormatterProvider.Register<GameDataExportArtifact>();
+        MemoryPackFormatterProvider.Register<GameDataExportModuleResult>();
         MemoryPackFormatterProvider.Register<GameDataExportRequest>();
         MemoryPackFormatterProvider.Register<GameDataExportProgress>();
         MemoryPackFormatterProvider.Register<GameDataExportResult>();

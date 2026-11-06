@@ -32,6 +32,9 @@ public sealed partial class GameDataExportPage : Page, IWindowInitializable
         }
     }
 
+    private async void OnLoaded(object sender, RoutedEventArgs e)
+    { if (ViewModel is { } viewModel) await viewModel.LoadModulesCommand.ExecuteAsync(null); }
+
     public void Initialize()
     {
     }

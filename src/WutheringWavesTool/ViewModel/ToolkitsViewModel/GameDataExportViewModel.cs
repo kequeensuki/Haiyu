@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using ABI.Models;
 using ABIRuntime;
 using ABIRuntime.Abstractions;
@@ -8,7 +9,7 @@ namespace Haiyu.ViewModel.ToolkitsViewModel;
 
 /// <summary>
 /// 游戏数据导出：调用特权宿主的 GameDataExportService，
-/// 抓取游戏登录流量并导出背包数据（普通道具 / 武器 / 声骸 / 限时道具）。
+/// 观察应用级捕获会话，展示宿主目录中的模块选择及通用导出结果。
 ///
 /// <para>
 /// ★ 使用时机（协议决定，必须提示用户）：会话密钥只在游戏登录握手时下发一次，
@@ -21,12 +22,14 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
     private readonly Action _refreshOnUi;
     private readonly WindowSession _windowSession;
     private readonly IGameDataExportKeyService _keyService;
+    private readonly IGameDataExportCatalogService _catalog;
 
-    public GameDataExportViewModel(IViewFactorys viewFactorys, WindowSession windowSession, IGameDataExportKeyService keyService)
+    public GameDataExportViewModel(IViewFactorys viewFactorys, WindowSession windowSession, IGameDataExportKeyService keyService, IGameDataExportCatalogService catalog)
     {
         ViewFactorys = viewFactorys;
         _windowSession = windowSession;
         _keyService = keyService;
+        _catalog = catalog;
         _launcher = Instance.Host.Services.GetRequiredService<Services.GameDataExportLauncher>();
         // 窗口仅观察应用会话，不持有 await session 的长期 continuation。
         var dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread()
@@ -50,11 +53,16 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
     private void SynchronizeSession()
     {
         IsExporting = _launcher.IsSessionActive;
-        if (IsExporting) ExportAllServerMessages = _launcher.CurrentScope.HasFlag(GameDataExportScope.AllServerMessages);
+        foreach (var item in Modules)
+        {
+            item.IsEnabled = !IsExporting;
+            if (IsExporting && _launcher.CurrentModuleIds is { } ids) item.IsSelected = ids.Contains(item.Id, StringComparer.Ordinal);
+        }
         if (_launcher.LastProgress is { } progress)
         {
             var business = _launcher.LastBusinessProgress;
-            ProgressMessage = business?.EventExport is { } stats
+            ProgressMessage = business?.Modules is { Length: > 0 } modules ? FormatModules(modules)
+                : business?.EventExport is { } stats
                 ? progress.Message + "\n" + FormatEventStats(stats)
                 : business is { Stage: GameDataExportStage.Monitoring, OutputJsonPath: not null }
                 ? $"监控中：玩家 {business.PlayerId}，已更新 {business.UpdateCount} 次\n最新文件：{business.OutputJsonPath}"
@@ -77,6 +85,7 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
 
     private static string FormatResult(GameDataExportResult result)
     {
+        if (result.Modules is { Length: > 0 } modules) return result.Message + "\n" + FormatModules(modules) + "\n" + result.CaptureIndexPath;
         if (result.EventExport is { } events)
         {
             var message = result.Message + "\n" + FormatEventStats(events);
@@ -133,7 +142,45 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
     public partial bool HasResult { get; private set; }
 
     [ObservableProperty]
-    public partial bool ExportAllServerMessages { get; set; }
+    [NotifyCanExecuteChangedFor(nameof(StartExportCommand))]
+    public partial bool IsLoadingModules { get; private set; }
+
+    public ObservableCollection<GameDataExportModuleSelection> Modules { get; } = [];
+
+    [RelayCommand]
+    private async Task LoadModulesAsync()
+    {
+        if (Modules.Count > 0 || IsDisposed || IsLoadingModules) return;
+        IsLoadingModules = true;
+        try
+        {
+            var descriptors = await _catalog.GetAsync(LifetimeToken);
+            if (IsDisposed) return;
+            foreach (var descriptor in descriptors)
+            {
+                var name = LanguageService.GetString(descriptor.NameKey);
+                if (string.IsNullOrWhiteSpace(name) || name == descriptor.NameKey) name = descriptor.DisplayName;
+                Modules.Add(new(descriptor.Id, name, descriptor.DefaultSelected));
+            }
+            SynchronizeSession();
+        }
+        catch (OperationCanceledException) when (IsDisposed) { }
+        catch (Exception ex) { if (!IsDisposed) { HasResult = true; ResultMessage = ex.Message; } }
+        finally { if (!IsDisposed) IsLoadingModules = false; }
+    }
+
+    private static string DisplayName(string kind, string value)
+    {
+        var key = "Toolkit_GameDataExport" + kind + "_" + value;
+        var name = LanguageService.GetString(key);
+        return string.IsNullOrWhiteSpace(name) || name == key ? value : name;
+    }
+
+    private static string FormatModules(IEnumerable<GameDataExportModuleResult> modules) => string.Join("\n\n", modules.Select(module =>
+        module.DisplayName + "：" + DisplayName("State", module.State.ToString()) + (module.Error is null ? "" : "\n" + module.Error)
+        + "\n" + string.Join("、", module.Counters.Select(counter => (counter.PlayerId is { } player ? DisplayName("Counter", "player") + " " + player + "：" : "") + DisplayName("Counter", counter.Name) + " " + counter.Value))
+        + (module.Sources.Length == 0 ? "" : "\n" + string.Join("、", module.Sources.Select(source => (source.PlayerId is { } player ? player + "/" : "") + DisplayName("Source", source.SourceId) + " " + DisplayName("State", source.State))))
+        + "\n" + string.Join("\n", module.Artifacts.Select(artifact => artifact.Path).Distinct())));
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ImportKeyCommand))]
@@ -146,7 +193,7 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
     public bool CanChooseExportMode => !IsExporting;
 
     private bool CanImportKey() => !IsDisposed && !IsExporting && !IsImportingKey;
-    private bool CanStartExport() => !IsDisposed && !IsImportingKey;
+    private bool CanStartExport() => !IsDisposed && !IsImportingKey && !IsLoadingModules;
 
     /// <summary>窗口只负责选择文件与展示结果，私钥校验和保存由业务服务完成。</summary>
     [RelayCommand(CanExecute = nameof(CanImportKey))]
@@ -192,9 +239,8 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
             return;
         try
         {
-            var scope = GameDataExportScope.Inventory;
-            if (ExportAllServerMessages) scope |= GameDataExportScope.AllServerMessages;
-            _launcher.TryStart(out _, scope);
+            _launcher.TryStart(out _, new GameDataExportRequest(GameDataExportScope.None,
+                Modules.Where(module => module.IsSelected).Select(module => module.Id).ToArray()));
             SynchronizeSession();
         }
         catch (Exception ex)

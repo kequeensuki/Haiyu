@@ -72,6 +72,8 @@ public static class BuiltInServices
             GameDataExportResult,
             GameDataExportService
         >(Contract.GameDataExportContract);
+        services.AddPrivilegedService<GameDataExportModuleCatalogRequest, GameDataExportProgress,
+            GameDataExportModuleCatalogResult, GameDataExportModuleCatalogService>(Contract.GameDataExportModuleCatalogContract);
         return services;
     }
 }

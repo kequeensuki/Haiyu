@@ -5,10 +5,10 @@ namespace Haiyu.Services;
 
 public sealed partial class GameDataExportLauncher
 {
-    public GameDataExportLauncher() : this(InvokeExportAsync, IsGameRunning) { }
+    public GameDataExportLauncher() : this(true, InvokeExportAsync, IsGameRunning) { }
 
     private static async Task<GameDataExportResult> InvokeExportAsync(
-        GameDataExportScope scope, IProgress<IPrivilegedProgress<GameDataExportProgress>> progress, CancellationToken token)
+        GameDataExportRequest request, IProgress<IPrivilegedProgress<GameDataExportProgress>> progress, CancellationToken token)
     {
         var runtime = Instance.Host.Services.GetRequiredService<ABIRuntimeService>();
         var initialized = await runtime.Initialize(Waves.Settings.AppSettings.ABIRuntimeSavePath)
@@ -16,7 +16,7 @@ public sealed partial class GameDataExportLauncher
         if (!initialized || runtime.Runtime is null)
             return Fail(LanguageService.GetString("Toolkit_GameDataExportAbiMissing"));
         var result = await runtime.Runtime.InvokeAsync(ABIRuntime.Contract.GameDataExportContract,
-            new GameDataExportRequest(scope), progress, token).ConfigureAwait(false);
+            request, progress, token).ConfigureAwait(false);
         return result.Data ?? Fail(result.Message);
     }
 

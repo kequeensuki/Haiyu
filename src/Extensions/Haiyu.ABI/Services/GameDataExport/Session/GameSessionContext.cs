@@ -3,7 +3,7 @@ using Haiyu.ABI.Services.GameDataExport.Decrypt;
 
 namespace Haiyu.ABI.Services.GameDataExport.Session;
 
-/// <summary>登录身份与密钥上下文；不持有背包、事件文件或捕获接口。</summary>
+/// <summary>登录身份与密钥上下文；不持有导出业务状态、文件或捕获接口。</summary>
 internal sealed class GameSessionContext(SessionKeyLoader keyLoader) : IDisposable
 {
     private readonly FrameCipher _cipher = new();
@@ -36,7 +36,7 @@ internal sealed class GameSessionContext(SessionKeyLoader keyLoader) : IDisposab
             _identityPending = true;
             _awaitingLoginAck = true;
             PlayerId.NotifyRelogin();
-            _diagnostic = "已取得新会话密钥，等待玩家身份及完整背包。";
+            _diagnostic = "已取得新会话密钥，等待新的玩家身份。";
         }
         return true;
     }
@@ -84,7 +84,7 @@ internal sealed class GameSessionContext(SessionKeyLoader keyLoader) : IDisposab
                 if (!_identityPending) SessionId = Guid.NewGuid().ToString("N");
             }
             IdentityVersion++;
-            _diagnostic = $"已切换至玩家 {PlayerId.PlayerId}，等待完整背包。";
+            _diagnostic = $"已切换至玩家 {PlayerId.PlayerId}，继续接收服务器数据。";
         }
         _identityPending = false;
         return changed && previousId > 0 && wasResolved;

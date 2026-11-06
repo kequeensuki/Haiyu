@@ -1,3 +1,4 @@
+using Haiyu.ABI.Services.GameDataExport.Modules;
 using Haiyu.ABI.Services.GameDataExport.Decrypt;
 using Haiyu.ABI.Services.GameDataExport.Protocol;
 
@@ -11,10 +12,12 @@ internal sealed record MessageObservation(
     string SessionId,
     uint ConnectionId,
     string? Status,
-    ProtocolJsonDecoder.Result? Protocol);
+    ProtocolJsonDecoder.Result? Protocol,
+    bool IsCurrentSession = true, bool ConnectionVerified = true, long EventIndex = 0, DateTimeOffset? ReceivedAt = null, string? CaptureId = null);
 
 internal interface IGameMessageObserver
 {
     void Observe(MessageObservation message);
     void Bind(string sessionId, int playerId);
+    void SessionChanged(ExportSessionChange change) { }
 }

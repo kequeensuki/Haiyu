@@ -1,3 +1,4 @@
+// 旧版诊断投影，仅用于保留线协议回归断言；生产代码使用 InventoryExportModule。
 using ABI.Models;
 
 namespace Haiyu.ABI.Services.GameDataExport.Export;
