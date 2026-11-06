@@ -9,7 +9,8 @@ pwsh -File .\publish.ps1 -Configuration Debug
 .NOTES
 需要 Windows、.NET 10 SDK（或更新的兼容 SDK）、Windows SDK 和 Visual Studio C++ 构建工具。
 仅发布生成器，不自动运行它或改写游戏协议。Debug 同样发布 NativeAOT，保留调试配置。
-发现 Low/Untrusted 完整性标签时直接停止，不自动提权或修改 ACL。
+发现 Low/Untrusted 完整性标签时询问是否改为 Medium；拒绝则停止，不自动提权。
+目录设置 (OI)(CI) 继承；已有显式低完整性子项会分别询问。仅修改完整性标签，不重置 DACL。
 运行前请退出 Haiyu 和后台 ABI 宿主；旧 ABI 会保留为相邻的 backup 目录。
 #>
 [CmdletBinding()]
@@ -124,7 +125,24 @@ function Assert-PathIntegrity {
     $rid = [Haiyu.Publish.IntegrityReader]::ReadPath($Path)
     if ($null -ne $rid -and $rid -lt 8192) {
         & $script:Icacls $Path | Out-Host
-        throw "发现 Low/Untrusted 完整性标签 S-1-16-$rid：$Path。请核实并修复标签，或将仓库放到正常完整性的目录后重试；脚本未修改 ACL。"
+        $isDirectory = Test-Path -LiteralPath $Path -PathType Container
+        $scope = if ($isDirectory) { '目录及其子项继承标签' } else { '此文件的完整性标签' }
+        Write-Host "发现 Low/Untrusted 完整性标签 S-1-16-$rid：$Path" -ForegroundColor Yellow
+        [string] $answer = Read-Host "是否将${scope}改为 Medium（中完整性）？目标：$Path [y/N]"
+        if ($answer.Trim() -notin @('y', 'yes', '是')) {
+            throw "用户未同意修改完整性标签，停止发布：$Path"
+        }
+
+        $level = if ($isDirectory) { '(OI)(CI)M' } else { 'M' }
+        & $script:Icacls $Path '/setintegritylevel' $level | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "完整性标签修改失败，退出码：$LASTEXITCODE。请确认当前终端具有修改权限：$Path"
+        }
+        $verifiedRid = [Haiyu.Publish.IntegrityReader]::ReadPath($Path)
+        if ($null -ne $verifiedRid -and $verifiedRid -ne 8192) {
+            throw "修改后复核失败，完整性仍为 S-1-16-$verifiedRid：$Path。停止发布。"
+        }
+        Write-Host "完整性复核通过（Medium）：$Path" -ForegroundColor Green
     }
 }
 
