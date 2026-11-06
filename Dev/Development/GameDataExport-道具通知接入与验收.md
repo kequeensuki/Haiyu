@@ -13,23 +13,27 @@
 | 来源 | 下行消息 | 投影语义 |
 |---|---|---|
 | 普通道具 | NormalItemAdd/Update/RemoveNotify | Id 为键；Add 只添加不存在的键，Update 替换已有对象的绝对数量，Remove 删除指定 Id；Update 保留原过期时间 |
-| 武器 | WeaponItemAdd/RemoveNotify | IncrId 为键；添加与删除实例，不能按配置 Id 合并多把武器 |
+| 武器 | WeaponItemAdd/RemoveNotify | IncrId 为键；Add 更新或添加完整实例，Remove 删除实例，不能按配置 Id 合并多把武器 |
 | 限时道具 | ValidTimeItemAdd/Update/RemoveNotify | (Id, IncrId) 为键；Update 替换数量和过期时间，Remove 使用 (ItemId, IncrId) |
-| 声骸 | PhantomItemAdd/RemoveNotify | IncrId 为键；新增实例或替换已有堆叠对象，已有编号且 StackCount 缺失/为 0 的 Add 不清空原对象 |
-| 声骸 | PhantomItemUpdateNotify | 批量完整覆盖对象，StackCount 为 0 删除实例 |
-| 声骸 | PhantomLevelUpResponse | 成功时先应用 StackSplitInfo 的操作对象和剩余对象，再覆盖 UpdateInfo；ItemMap 是返还展示，不重复累加普通道具 |
-| 声骸 | PhantomIdentifyResponse / PhantomVicePolishAckResponse | 成功时用 UpdateInfo 完整覆盖，包含清空旧词条；失败响应不改写状态 |
+| 声骸 | PhantomItemAdd/RemoveNotify | IncrId 为键；Add 完整刷新养成字段，已有编号且 StackCount 缺失/为 0 时保留库存数量与获得时间；Remove 删除实例 |
+| 声骸 | PhantomItemUpdateNotify / PhantomVicePolishAckResponse | 库存数量与完整养成字段更新，StackCount 为 0 删除；同实例同配置的 AddTime 仅在大于 0 时替换；失败响应不改写状态 |
+| 声骸 | PhantomLevelUpResponse | 成功时先应用 StackSplitInfo，再仅覆盖已有实例的养成字段，保留拆分后的库存数量和获得时间；ItemMap 是返还展示，不重复累加普通道具 |
+| 声骸 | PhantomIdentifyResponse | 成功时仅完整覆盖已有实例的养成字段，保留库存数量和获得时间；失败响应不改写状态 |
 
 证据位置：
 
 - `Aki.Game/InventoryController.cs`：普通道具 379–521；限时道具 539–644；武器 647–720；声骸 723–850；堆叠拆分/合并 854–915。
 - `Aki.Game/InventoryModel.cs`：NewCommonItemData 319–338（已有键不重复新增）；NewWeaponItemData 539–549；UpdatePhantomItemData 608–635。
+- `Aki.Game/WeaponController.cs`：OnAddWeaponItem 83–86，调用 `WeaponModel.cs` 22–39 的 AddWeaponData 更新或添加实例。
+- `Aki.Game/InventoryController.cs`：823 行即使忽略库存数量仍发出 OnAddPhantomItem；`PhantomBattleController.cs` 58–61、`PhantomBattleModel.cs` 234–241 会刷新养成模型。
 - `Aki.Game/PhantomBattleController.cs`：升级 122–164；服务器完整更新 443–466；调谐 469–507。
 - `Aki.Game/CalabashController.cs`：洗练确认 611–638。
 - `Aki.Game/PhantomStackUtil.cs`：IsUpdateInfoRemoved 判定 StackCount == 0。
 - `Aki.Game/PhantomBattleModel.cs`：NewPhantomBattleData / UpdatePhantomBattleData 234–257；PhantomLevelUpReceiveItem 438–455（返还展示）。
 
-声骸 JSON 兼容保留原字段，追加 `unAckSubProp`、`lockPropIndex`、`addTime`、`funcValue`。升级或调谐响应是完整对象，不能只合并非零字段，否则会残留已清空的词条或锁定槽位。UI 与高权限 ABI 交换模型一并发布。
+声骸 JSON 兼容保留原字段，追加 `unAckSubProp`、`lockPropIndex`、`addTime`、`funcValue`。养成字段（Id/FuncValue/等级/经验/主副词条/套装/皮肤/未确认词条/锁定槽位）完整覆盖，包括零值和空列表；库存字段 StackCount、AddTime 按消息通道独立处理。不能将“完整养成数据”当成“完整库存数据”，也不能把缺省数量的升级/调谐响应当成删除。UI 与高权限 ABI 交换模型一并发布。
+
+StackSplitInfo 的 OperateItem 走库存更新；RemainderItem 走新增库存及养成事件，若编号已存在则保留该实例的库存字段，只刷新养成字段。升级 UpdateInfo 不复活已由拆分操作删除的实例。
 
 ## 顺序、隔离与输出
 
@@ -57,7 +61,7 @@
 1. 退出 Haiyu，同步分支并运行根目录 `publish.ps1`，确保 UI 与 ABI 一起更新。ABI 必须部署到实际“文档”目录下的 `Waves/Haiyu.ABI`。
 2. 选择“背包快照”和“道具与角色变更事件”，开始捕获后重新登录游戏；首次全量到齐应生成原有玩家目录与快照，公共索引应登记两个模块。
 3. 获取、使用、删除普通道具，获取/删除武器，改变限时道具。快照应更新原文件；数量等于游戏最新数量，不能累计相同的绝对数量，同配置的多个实例不能互相覆盖。
-4. 升级声骸到 5 级并调谐，核对等级、经验及完整副词条；有未确认词条时检查 unAckSubProp，确认后旧词条和锁定槽位应按新完整对象清空或替换。失败操作不改变成功快照或增加更新次数。
+4. 升级声骸到 5 级并调谐，核对等级、经验及完整副词条；响应省略 StackCount 时该实例仍在，库存数量与获得时间保持不变。有未确认词条时检查 unAckSubProp，确认后旧词条和锁定槽位应按新养成对象清空或替换。失败操作不改变成功快照或增加更新次数。
 5. 使用堆叠素材，检查拆分后的新实例及剩余数量；收到 StackCount=0 的更新后该实例应消失。奖励横幅或返还 ItemMap 不应再额外增加库存。
 6. 切换账号后检查两个玩家文件、更新次数及索引归属独立，旧登录的流量不能覆盖新账号。停止后两位玩家统计应仍保留。
 7. 打开 item-changes 的 JSONL，核对相应消息名称、真正响应 ID 和完整 payload；新角色、皮肤、奖励消息应出现；未确认洗练预览只出现事件，不能提前改写声骸快照。单独选择事件模块时也应正常导出。
@@ -66,7 +70,7 @@
 ## 本次验证结果
 
 - .NET 10 测试工程串行编译通过，无错误。
-- 34 组导出回归通过，含新增的绝对数量/实例键/幂等、升级/调谐/确认/拆分/失败响应、基线与顺序水位、账号隔离、事件筛选和单独导出检查；追加声骸字段的 JSON 与 MemoryPack 往返通过。
+- Review 修复后 35 组导出回归全部通过，覆盖绝对数量/实例键/幂等、升级/调谐/确认/拆分/失败响应、基线与顺序水位、账号隔离、事件筛选和单独导出；追加声骸字段的 JSON 与 MemoryPack 往返通过。第 35 组补充检查升级/调谐缺省数量、已有武器刷新、已有声骸 Add 缺省数量、获得时间保留及配置变化、拆分后不复活与确认通道删除。
 - 新模块名称在多语言源文件及四种语言资产中一致，逐项比较确认既有资产未被删除或改写。
 - 全仓库 `validate_localization.py --generate` 未通过：原有语言资产中已有 47 个键不在源文件，另外有既有 UI 字面文案缺少源条目。生成时会删去这些既有键，因此本次保留原资产，只追加新模块名称。该全仓库问题未计入本次通过项目，也未顺带修改无关文案。
 - 代码与协议元数据核对通过。没有运行 Windows UI、Npcap 或真实账号操作；以上 Windows 步骤是待实机验证的验收标准。

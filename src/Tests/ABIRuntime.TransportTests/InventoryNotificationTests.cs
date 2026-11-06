@@ -143,6 +143,71 @@ internal static partial class Program
         Equal(301, (await fixture.Flush()).Inventory!.Phantoms.Single().IncrId);
     }
 
+    private static async Task TestInventoryModelFieldSemanticsAsync()
+    {
+        await using var fixture = new NotificationFixture();
+        fixture.Full(weapons: new() { WeaponItemList = { new WeaponItem { Id = 10, IncrId = 101, WeaponLevel = 5, RoleId = 1 } } },
+            phantoms: new() { PhantomItemList = { new PhantomItem { Id = 30, IncrId = 301, StackCount = 2, AddTime = 42,
+                PhantomLevel = 5, UnAckSubProp = { new PhantomPropInfo { PhantomPropId = 1, Value = 100 } }, LockPropIndex = { 2 } } } });
+        await fixture.Flush();
+        var weapon = new WeaponItemAddNotify { WeaponItemList = { new WeaponItem { Id = 10, IncrId = 101, WeaponLevel = 20, RoleId = 2 } } };
+        fixture.Feed(WavesMessageIds.WeaponItemAddNotify, weapon);
+        fixture.Feed(WavesMessageIds.PhantomLevelUpResponse, new PhantomLevelUpResponse
+            { UpdateInfo = new PhantomItem { Id = 30, IncrId = 301, PhantomLevel = 10, AddTime = 999 } });
+        var result = await fixture.Flush();
+        Equal(20, result.Inventory!.Weapons.Single().WeaponLevel);
+        Equal(2, result.Inventory.Weapons.Single().RoleId);
+        var phantom = result.Inventory.Phantoms.Single();
+        Equal(10, phantom.PhantomLevel);
+        Equal(2, phantom.StackCount);
+        Equal(42L, phantom.AddTime);
+        Equal(0, phantom.UnAckSubProps!.Count);
+        Equal(0, phantom.LockPropIndices!.Count);
+        fixture.Feed(WavesMessageIds.WeaponItemAddNotify, weapon);
+        Equal(result.UpdateCount, (await fixture.Flush()).UpdateCount);
+        fixture.Feed(WavesMessageIds.PhantomIdentifyResponse, new PhantomIdentifyResponse
+            { UpdateInfo = new PhantomItem { Id = 30, IncrId = 301, PhantomLevel = 10,
+                PhantomSubProp = { new PhantomPropInfo { PhantomPropId = 2, Value = 200 } } } });
+        phantom = (await fixture.Flush()).Inventory!.Phantoms.Single();
+        Equal(2, phantom.StackCount);
+        Equal(42L, phantom.AddTime);
+        Equal(200, phantom.SubProps.Single().Value);
+        fixture.Feed(WavesMessageIds.PhantomItemAddNotify, new PhantomItemAddNotify
+            { PhantomItemList = { new PhantomItem { Id = 30, IncrId = 301, PhantomLevel = 15, AddTime = 1234 } } });
+        phantom = (await fixture.Flush()).Inventory!.Phantoms.Single();
+        Equal(15, phantom.PhantomLevel);
+        Equal(2, phantom.StackCount);
+        Equal(42L, phantom.AddTime);
+        Equal(0, phantom.SubProps.Count);
+        fixture.Feed(WavesMessageIds.PhantomItemUpdateNotify, new PhantomItemUpdateNotify
+            { UpdateInfo = { new PhantomItem { Id = 30, IncrId = 301, StackCount = 1, PhantomLevel = 20 } } });
+        phantom = (await fixture.Flush()).Inventory!.Phantoms.Single();
+        Equal(1, phantom.StackCount);
+        Equal(20, phantom.PhantomLevel);
+        Equal(42L, phantom.AddTime);
+        fixture.Feed(WavesMessageIds.PhantomVicePolishAckResponse, new PhantomVicePolishAckResponse
+            { UpdateInfo = new PhantomItem { Id = 30, IncrId = 301, StackCount = 1, PhantomLevel = 25, AddTime = 84 } });
+        phantom = (await fixture.Flush()).Inventory!.Phantoms.Single();
+        Equal(25, phantom.PhantomLevel);
+        Equal(84L, phantom.AddTime);
+        fixture.Feed(WavesMessageIds.PhantomItemUpdateNotify, new PhantomItemUpdateNotify
+            { UpdateInfo = { new PhantomItem { Id = 31, IncrId = 301, StackCount = 1 } } });
+        Equal(0L, (await fixture.Flush()).Inventory!.Phantoms.Single().AddTime); // 配置变化不能沿用旧获得时间。
+        fixture.Feed(WavesMessageIds.PhantomLevelUpResponse, new PhantomLevelUpResponse
+        {
+            StackSplitInfo = new PhantomStackSplitInfo { OperateItem = new PhantomItem { Id = 31, IncrId = 301, StackCount = 0 },
+                RemainderItem = new PhantomItem { Id = 31, IncrId = 302, StackCount = 2, AddTime = 100 } },
+            UpdateInfo = new PhantomItem { Id = 31, IncrId = 301, PhantomLevel = 30 },
+        });
+        phantom = (await fixture.Flush()).Inventory!.Phantoms.Single();
+        Equal(302, phantom.IncrId); // 养成响应不能复活拆分操作已经删除的实例。
+        Equal(2, phantom.StackCount);
+        Equal(100L, phantom.AddTime);
+        fixture.Feed(WavesMessageIds.PhantomVicePolishAckResponse, new PhantomVicePolishAckResponse
+            { UpdateInfo = new PhantomItem { Id = 31, IncrId = 302, StackCount = 0 } });
+        Equal(0, (await fixture.Flush()).Inventory!.Phantoms.Count); // 确认响应仍遵循库存删除语义。
+    }
+
     private static async Task TestNotificationBaselineAndEventsAsync()
     {
         var source = new SourceState<string>(new("ordered"), _ => 1, TimeProvider.System);

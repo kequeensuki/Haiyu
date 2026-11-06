@@ -6,7 +6,7 @@ namespace Haiyu.ABI.Services.GameDataExport.Modules;
 /// <summary>官方 InventoryController/PhantomBattleController 的消息适配；聚合器不解释道具字段。</summary>
 internal static class InventoryMessageProjection
 {
-    internal enum Operation { Full, Add, Update, Remove, PhantomAdd, PhantomUpdate }
+    internal enum Operation { Full, Add, Update, Remove, WeaponAdd, PhantomAdd, PhantomUpdate, PhantomCultivation }
     internal sealed record Rule(string Source, int ListField, Operation Operation, int PayloadField,
         int ErrorField = 0, int SplitField = 0);
     internal static readonly IReadOnlyDictionary<ushort, Rule> Rules = new Dictionary<ushort, Rule>
@@ -16,14 +16,14 @@ internal static class InventoryMessageProjection
         [WavesMessageIds.NormalItemUpdateNotify] = new("normalItems", 3, Operation.Update, 4),
         [WavesMessageIds.NormalItemRemoveNotify] = new("normalItems", 3, Operation.Remove, 8),
         [WavesMessageIds.WeaponItemResponse] = new("weapons", 6, Operation.Full, 6),
-        [WavesMessageIds.WeaponItemAddNotify] = new("weapons", 6, Operation.Add, 11),
+        [WavesMessageIds.WeaponItemAddNotify] = new("weapons", 6, Operation.WeaponAdd, 11),
         [WavesMessageIds.WeaponItemRemoveNotify] = new("weapons", 6, Operation.Remove, 14),
         [WavesMessageIds.PhantomItemResponse] = new("phantoms", 3, Operation.Full, 3),
         [WavesMessageIds.PhantomItemAddNotify] = new("phantoms", 3, Operation.PhantomAdd, 3),
         [WavesMessageIds.PhantomItemRemoveNotify] = new("phantoms", 3, Operation.Remove, 13),
         [WavesMessageIds.PhantomItemUpdateNotify] = new("phantoms", 3, Operation.PhantomUpdate, 4),
-        [WavesMessageIds.PhantomLevelUpResponse] = new("phantoms", 3, Operation.PhantomUpdate, 14, 11, 13),
-        [WavesMessageIds.PhantomIdentifyResponse] = new("phantoms", 3, Operation.PhantomUpdate, 11, 8),
+        [WavesMessageIds.PhantomLevelUpResponse] = new("phantoms", 3, Operation.PhantomCultivation, 14, 11, 13),
+        [WavesMessageIds.PhantomIdentifyResponse] = new("phantoms", 3, Operation.PhantomCultivation, 11, 8),
         [WavesMessageIds.PhantomVicePolishAckResponse] = new("phantoms", 3, Operation.PhantomUpdate, 10, 15),
         [WavesMessageIds.ValidTimeItemResponse] = new("validTimeItems", 14, Operation.Full, 14),
         [WavesMessageIds.ValidTimeItemAddNotify] = new("validTimeItems", 14, Operation.Add, 12),
@@ -67,6 +67,10 @@ internal static class InventoryMessageProjection
                     case Operation.Add:
                         items.TryAdd(key, item);
                         break;
+                    case Operation.WeaponAdd:
+                        // OnAddWeaponItem 还会调用 WeaponModel.AddWeaponData，刷新已有实例的养成及装备信息。
+                        items[key] = item;
+                        break;
                     case Operation.Update:
                         if (items.TryGetValue(key, out var previous))
                         {
@@ -78,10 +82,18 @@ internal static class InventoryMessageProjection
                         }
                         break;
                     case Operation.PhantomAdd:
-                        if (!items.ContainsKey(key) || item.Int32(12) > 0) items[key] = item;
+                        // 库存可忽略缺失数量，但 OnAddPhantomItem 仍会完整刷新养成模型。
+                        items[key] = items.TryGetValue(key, out var previousPhantom)
+                            ? PreserveInventory(item, previousPhantom, item.Int32(12) <= 0,
+                                item.Int32(12) <= 0 || KeepAddTime(item, previousPhantom)) : item;
                         break;
                     case Operation.PhantomUpdate:
                         PutPhantom(items, item, false);
+                        break;
+                    case Operation.PhantomCultivation:
+                        // 升级/调谐只调用 SetData；库存数量和获得时间来自库存通道，不能据默认 0 删除。
+                        if (items.TryGetValue(key, out var cultivated))
+                            items[key] = PreserveInventory(item, cultivated, true, true);
                         break;
                 }
             }
@@ -111,9 +123,25 @@ internal static class InventoryMessageProjection
     private static void PutPhantom(Dictionary<(int, int), ProtocolMessage> items, ProtocolMessage item, bool addOnly)
     {
         var key = Key("phantoms", item);
-        if (addOnly) items.TryAdd(key, item);
-        else if (item.Int32(12) == 0) items.Remove(key);
-        else items[key] = item;
+        if (!addOnly && item.Int32(12) == 0) { items.Remove(key); return; }
+        items[key] = items.TryGetValue(key, out var previous)
+            ? PreserveInventory(item, previous, addOnly, addOnly || KeepAddTime(item, previous)) : item;
+    }
+
+    private static bool KeepAddTime(ProtocolMessage item, ProtocolMessage previous) =>
+        item.Int32(1) == previous.Int32(1) && item.Int64(13) <= 0;
+
+    private static ProtocolMessage PreserveInventory(ProtocolMessage item, ProtocolMessage previous, bool quantity, bool addTime)
+    {
+        if (!quantity && !addTime) return item;
+        var fields = item.Fields.ToDictionary();
+        foreach (var field in new[] { 12, 13 })
+        {
+            if (!(field == 12 ? quantity : addTime)) continue;
+            if (previous.Fields.TryGetValue(field, out var value)) fields[field] = value;
+            else fields.Remove(field);
+        }
+        return new(item.Schema, fields, item.HasUnknownFields || previous.HasUnknownFields);
     }
 
     private static bool Same(object first, object second)
