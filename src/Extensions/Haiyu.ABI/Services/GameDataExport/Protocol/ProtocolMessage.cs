@@ -18,6 +18,9 @@ internal sealed class ProtocolMessage
     internal IReadOnlyDictionary<int, object> Fields { get; }
     internal bool HasUnknownFields { get; }
     internal bool Has(int field) => Fields.ContainsKey(field);
+    internal ProtocolMessage? Message(int field) => Fields.GetValueOrDefault(field) as ProtocolMessage;
+    internal IReadOnlyList<int> Int32s(int field) => Fields.TryGetValue(field, out var value)
+        ? Array.AsReadOnly(((IReadOnlyList<object>)value).Cast<int>().ToArray()) : Array.Empty<int>();
     internal int Int32(int field) => Fields.TryGetValue(field, out var value) ? value switch
     { int i => i, uint i => unchecked((int)i), _ => throw new InvalidDataException("字段不是 int32") } : 0;
     internal long Int64(int field) => Fields.TryGetValue(field, out var value) ? value switch

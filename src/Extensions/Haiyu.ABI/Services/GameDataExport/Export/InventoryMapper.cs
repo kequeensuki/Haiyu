@@ -57,7 +57,11 @@ public static class InventoryMapper
                 MapProps(item.PhantomSubProp),
                 item.FetterGroupId,
                 item.SkinId,
-                item.StackCount
+                item.StackCount,
+                MapProps(item.UnAckSubProp),
+                item.LockPropIndex.ToArray(),
+                item.AddTime,
+                item.FuncValue
             ))
             .ToList();
     }

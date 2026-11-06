@@ -99,6 +99,26 @@ internal sealed class SourceState<T>(SourceDefinition definition, Func<T, int> s
         return LocalVersion != before;
     }
 
+    /// <summary>已验证连接的串行事件投影；只维护本地版本，不伪造服务器版本或补齐缺失基线。</summary>
+    internal bool ApplyOrdered(Func<T, T> reducer, SourceProvenance provenance)
+    {
+        if (ServerVersion is not null) return Reject("ordered_delta_on_versioned_source", true);
+        if (Value is null || !Available) return Reject("delta_requires_baseline", true);
+        if (provenance.LastMessageIndex is not { } next) return Reject("delta_order_unavailable", true);
+        if (_provenance?.LastMessageIndex is { } previous && next <= previous) return false;
+        T value;
+        try { value = reducer(Value); }
+        catch (InvalidDataException) { return Reject("invalid_delta", true); }
+        if (!Validate(value)) return Reject("source_entry_limit", true);
+        _provenance = Merge(_provenance, provenance);
+        _receivedAt = clock.GetTimestamp();
+        if (ReferenceEquals(value, Value)) return false;
+        Value = value;
+        LocalVersion++;
+        Error = null;
+        return true;
+    }
+
     internal void ExpireAssembly()
     {
         if (_assembly is null || clock.GetElapsedTime(_assemblyStarted) < (definition.AssemblyTimeout ?? TimeSpan.FromMinutes(2))) return;

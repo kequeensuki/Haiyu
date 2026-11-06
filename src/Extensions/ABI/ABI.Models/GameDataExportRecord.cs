@@ -180,7 +180,11 @@ public sealed partial record GamePhantomItem(
     [property: JsonPropertyName("phantomSubProp")] IReadOnlyList<GamePhantomProp> SubProps,
     [property: JsonPropertyName("fetterGroupId")] int FetterGroupId,
     [property: JsonPropertyName("skinId")] int SkinId,
-    [property: JsonPropertyName("stackCount")] int StackCount
+    [property: JsonPropertyName("stackCount")] int StackCount,
+    [property: JsonPropertyName("unAckSubProp")] IReadOnlyList<GamePhantomProp>? UnAckSubProps = null,
+    [property: JsonPropertyName("lockPropIndex")] IReadOnlyList<int>? LockPropIndices = null,
+    [property: JsonPropertyName("addTime")] long AddTime = 0,
+    [property: JsonPropertyName("funcValue")] int FuncValue = 0
 );
 
 /// <summary>声骸词条（对应 PhantomPropInfo）。</summary>

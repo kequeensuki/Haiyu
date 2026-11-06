@@ -9,7 +9,9 @@ internal static class BuiltInExportModules
     internal static ExportModuleRegistry Create(Func<GameDataExportResult, DateTimeOffset, string?>? legacyWrite = null,
         Func<EventExportSession>? legacyEvents = null) => new([
         new(InventoryExportModule.Definition, context => new InventoryExportModule(context, legacyWrite)),
-        new(ServerMessagesExportModule.Definition, context => new ServerMessagesExportModule(context, legacyEvents?.Invoke()))
+        new(ServerMessagesExportModule.Definition, context => new ServerMessagesExportModule(context, legacyEvents?.Invoke())),
+        new(ItemChangeMessages.Definition, context => new ServerMessagesExportModule(context,
+            descriptor: ItemChangeMessages.Definition, messageIds: ItemChangeMessages.MessageIds))
     ]);
 
     internal static string[] Select(GameDataExportRequest request)

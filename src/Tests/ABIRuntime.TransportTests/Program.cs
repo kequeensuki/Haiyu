@@ -23,6 +23,9 @@ internal static partial class Program
         ABIMemoryPack.EnsureFormatters();
         var tests = new (string Name, Func<Task> Run)[]
         {
+            ("道具通知：绝对数量/实例键/增删改/幂等", TestInventoryNotificationsAsync),
+            ("声骸响应：升级/调谐/确认/堆叠/失败不覆盖", TestPhantomMutationResponsesAsync),
+            ("通知接入：基线/账号隔离/筛选事件/独立目录", TestNotificationBaselineAndEventsAsync),
             ("通用会话通知：候选/确认恢复/新登录/退役", TestConfirmedResumeNotificationAsync),
             ("消息筛选模块：并行路径/独立编号/玩家计数", TestFilteredMessageModulesAsync),
             ("模块完成状态：单独/组合/无数据/部分数据", TestModuleCompletionStatesAsync),
@@ -74,7 +77,9 @@ internal static partial class Program
                 || t.Run == TestExportPersistenceRetryAsync || t.Run == TestExportStopResultAsync
                 || t.Run == TestNetworkCandidatesAsync || t.Run == TestMultiInterfaceCaptureAsync
                 || t.Run == TestNetworkReconnectAsync || t.Run == TestAccountMonitoringAsync
-                || t.Run == TestKeyTimeoutCleanupAsync || t.Run == TestModuleCatalogRegistrationAsync).ToArray();
+                || t.Run == TestKeyTimeoutCleanupAsync || t.Run == TestModuleCatalogRegistrationAsync
+                || t.Run == TestInventoryNotificationsAsync || t.Run == TestPhantomMutationResponsesAsync
+                || t.Run == TestNotificationBaselineAndEventsAsync).ToArray();
 
         if (args.Contains("--transport"))
             tests = tests.Where(t => t.Run == TestDependencyInjectionAsync
