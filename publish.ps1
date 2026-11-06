@@ -281,11 +281,13 @@ try {
     foreach ($project in @($generatorProject, $uiProject, $abiProject)) {
         if (-not (Test-Path -LiteralPath $project -PathType Leaf)) { throw "仓库文件缺失：$project" }
     }
-    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { throw 'USERPROFILE 为空，无法确定 ABI 部署位置。' }
+    # 与 Waves.Settings.AppSettings.ABIRuntimeSavePath 保持一致，支持文档目录重定向。
+    $documentsDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
+    if ([string]::IsNullOrWhiteSpace($documentsDirectory)) { throw '无法获取 Windows 文档目录，无法确定 ABI 部署位置。' }
     $generatorOutput = Join-Path $PSScriptRoot 'tools/WavesProtocolGenerator/bin/win-x64/publish'
     $uiOutput = Join-Path $PSScriptRoot 'src/WutheringWavesTool/bin/win-x64/publish'
     $abiOutput = Join-Path $PSScriptRoot 'src/Extensions/Haiyu.ABI/bin/win-x64/publish'
-    $abiDestination = Join-Path $env:USERPROFILE 'Waves/Haiyu.ABI'
+    $abiDestination = Join-Path $documentsDirectory 'Waves/Haiyu.ABI'
     $script:Icacls = (Get-Command icacls.exe -CommandType Application -ErrorAction Stop).Source
     Initialize-IntegrityReader
     if ([Haiyu.Publish.IntegrityReaderV2]::ReadProcess() -lt 8192) {
@@ -296,8 +298,8 @@ try {
     Write-Host '正在检查仓库及现有发布文件的完整性标签……'
     Assert-PathIntegrity $script:Dotnet
     Assert-TreeIntegrity $PSScriptRoot
-    Assert-PathIntegrity $env:USERPROFILE
-    $wavesDirectory = Join-Path $env:USERPROFILE 'Waves'
+    Assert-PathIntegrity $documentsDirectory
+    $wavesDirectory = Join-Path $documentsDirectory 'Waves'
     if (Test-Path -LiteralPath $wavesDirectory) { Assert-PathIntegrity $wavesDirectory }
     Assert-TreeIntegrity $abiDestination
     Assert-TreeIntegrity $uiOutput

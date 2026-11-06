@@ -120,3 +120,20 @@ python tools/validate_game_data_export.py --capture-index "C:\Users\<user>\Docum
 云端曾出现 MSBuild 子进程异常退出，随后显式 `dotnet build -m:1 -nr:false` 串行重试成功。保留原有 MemoryPack.Core 的 IL2104/IL3053 警告；不把这些既有库警告解释成 Windows 发布验证。
 
 Windows 实机结果由使用者按上表验证，本次没有运行 Windows UI、Npcap 驱动或凭据管理器实机验收。
+
+## 8. ABI 发布位置与模块目录注册排查
+
+`publish.ps1` 必须向 `[Environment]::GetFolderPath('MyDocuments')` 下的 `Waves\Haiyu.ABI` 部署，与 `AppSettings.ABIRuntimeSavePath` 及界面导入 ABI 包使用的目录一致。不能用 `%USERPROFILE%\Waves\Haiyu.ABI` 替代；文档目录可能被 OneDrive 或组策略重定向。
+
+此前脚本将新版 DLL 部署到了用户目录，而应用仍从文档目录加载旧版 DLL。旧宿主能完成 UAC 提权及基础初始化，但没有 `haiyu.gameDataExport.modules.v1` 服务，打开导出窗口便会返回 `0x80004001`。当前组合根已经注册模块目录服务，修复应统一部署位置。
+
+Windows 验收：退出 Haiyu，运行根目录 `publish.ps1`，确认末尾 `ABI` 路径指向实际文档目录。可在仓库根目录检查发布 DLL 与部署 DLL 的 SHA256：
+
+```powershell
+$deployedAbi = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Waves\Haiyu.ABI\Haiyu.ABI.dll'
+Get-FileHash '.\src\Extensions\Haiyu.ABI\bin\win-x64\publish\Haiyu.ABI.dll', $deployedAbi
+```
+
+两者哈希应一致。启动新发布的 Haiyu，打开游戏数据导出并确认 UAC，窗口应加载模块选择项，不再显示未注册 Service。开始导出后应进入正常捕获流程。已重定向文档目录的机器应满足同一标准。
+
+无需删除用户目录下此前误部署的文件；应用仍使用现有文档目录架构。退出并重新启动 Haiyu 可使其启动新的 ABI 宿主，避免沿用旧进程。

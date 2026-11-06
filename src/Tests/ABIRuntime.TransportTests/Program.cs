@@ -31,6 +31,7 @@ internal static partial class Program
             ("多来源：乱序分页/迟到批次/超时/有序增删改", TestAggregatePagesAndDeltasAsync),
             ("共享输出：路径验证/代次隔离/失败保留旧文件", TestSharedOutputFencingAsync),
             ("模块注册：新增无背包模块/选择校验/索引/ABI", TestExportModuleRegistryAsync),
+            ("模块目录：高权限宿主组合根注册与查询", TestModuleCatalogRegistrationAsync),
             ("背包模块：待身份聚合/多玩家次数/历史流量隔离", TestInventoryModuleIsolationAsync),
             ("Xbox 档位、序列化、服务与本机 XInput", TestXboxSessionsAsync),
             ("DI 构造注入、作用域与释放", TestDependencyInjectionAsync),
@@ -73,7 +74,7 @@ internal static partial class Program
                 || t.Run == TestExportPersistenceRetryAsync || t.Run == TestExportStopResultAsync
                 || t.Run == TestNetworkCandidatesAsync || t.Run == TestMultiInterfaceCaptureAsync
                 || t.Run == TestNetworkReconnectAsync || t.Run == TestAccountMonitoringAsync
-                || t.Run == TestKeyTimeoutCleanupAsync).ToArray();
+                || t.Run == TestKeyTimeoutCleanupAsync || t.Run == TestModuleCatalogRegistrationAsync).ToArray();
 
         if (args.Contains("--transport"))
             tests = tests.Where(t => t.Run == TestDependencyInjectionAsync
@@ -404,6 +405,22 @@ internal static partial class Program
     private sealed class XboxFixtureSource(XboxSession[] sessions) : IXboxSessionSource
     {
         public XboxSession[] GetSessions() => sessions;
+    }
+
+    private static async Task TestModuleCatalogRegistrationAsync()
+    {
+        using var provider = new ServiceCollection().AddBuiltInServices()
+            .BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
+        await using var scope = provider.CreateAsyncScope();
+        var operation = Contract.GameDataExportModuleCatalogContract.Operation;
+        _ = scope.ServiceProvider.GetRequiredKeyedService<IServiceInvoker>(operation);
+        var service = scope.ServiceProvider.GetRequiredKeyedService<
+            IPrivilegedService<GameDataExportModuleCatalogRequest, GameDataExportProgress,
+                GameDataExportModuleCatalogResult>>(operation);
+        var result = await service.ExecuteAsync(new(), new InlineProgress<GameDataExportProgress>(_ => { }), default);
+        var expected = Haiyu.ABI.Services.GameDataExport.Modules.BuiltInExportModules.Create().Describe();
+        Check(result.Modules.Length > 0 && result.Modules.Select(x => x.Id).SequenceEqual(expected.Select(x => x.Id)),
+            "高权限宿主未提供完整的模块目录。");
     }
 
     private static async Task TestDependencyInjectionAsync()
