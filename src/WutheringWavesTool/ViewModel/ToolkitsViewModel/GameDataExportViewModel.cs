@@ -176,11 +176,52 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
         return string.IsNullOrWhiteSpace(name) || name == key ? value : name;
     }
 
-    private static string FormatModules(IEnumerable<GameDataExportModuleResult> modules) => string.Join("\n\n", modules.Select(module =>
-        module.DisplayName + "：" + DisplayName("State", module.State.ToString()) + (module.Error is null ? "" : "\n" + module.Error)
-        + "\n" + string.Join("、", module.Counters.Select(counter => (counter.PlayerId is { } player ? DisplayName("Counter", "player") + " " + player + "：" : "") + DisplayName("Counter", counter.Name) + " " + counter.Value))
-        + (module.Sources.Length == 0 ? "" : "\n" + string.Join("、", module.Sources.Select(source => (source.PlayerId is { } player ? player + "/" : "") + DisplayName("Source", source.SourceId) + " " + DisplayName("State", source.State))))
-        + "\n" + string.Join("\n", module.Artifacts.Select(artifact => artifact.Path).Distinct())));
+    private static string FormatModules(IEnumerable<GameDataExportModuleResult> modules) =>
+        string.Join("\n\n", modules.Select(FormatModule));
+
+    private static string FormatModule(GameDataExportModuleResult module)
+    {
+        var lines = new List<string> { module.DisplayName + "：" + DisplayName("State", module.State.ToString()) };
+        if (!string.IsNullOrWhiteSpace(module.Error)) lines.Add(module.Error);
+        var players = module.Counters.Select(counter => counter.PlayerId)
+            .Concat(module.Sources.Select(source => source.PlayerId))
+            .Concat(module.Artifacts.Select(artifact => artifact.PlayerId))
+            .Where(player => player.HasValue).Distinct().ToArray();
+        var currentPlayer = module.Counters.FirstOrDefault(counter => counter.PlayerId is null && counter.Name == "currentPlayer")?.Value;
+
+        foreach (var player in new int?[] { null }.Concat(players))
+        {
+            var counters = module.Counters.Where(counter => counter.PlayerId == player);
+            if (player is null)
+            {
+                // 玩家行已表达的身份和计数无需再在汇总行重复；多玩家时保留总计。
+                counters = counters.Where(counter => counter.Name switch
+                {
+                    "currentPlayer" => !players.Any(id => id == currentPlayer),
+                    "currentPlayerUpdates" => !module.Counters.Any(item => item.PlayerId is not null
+                        && item.PlayerId == currentPlayer && item.Name == "updates" && item.Value == counter.Value),
+                    "players" => players.Length != 1 || counter.Value != 1,
+                    "updates" => players.Length != 1 || !module.Counters.Any(item => item.PlayerId == players[0]
+                        && item.Name == "updates" && item.Value == counter.Value),
+                    _ => true,
+                });
+            }
+            else
+            {
+                lines.Add(DisplayName("Counter", player == currentPlayer ? "currentPlayer" : "player") + " " + player);
+            }
+
+            var statistics = string.Join("、", counters.Select(counter => DisplayName("Counter", counter.Name) + " " + counter.Value));
+            if (statistics.Length > 0) lines.Add(statistics);
+            foreach (var sources in module.Sources.Where(source => source.PlayerId == player).GroupBy(source => source.State))
+            {
+                lines.Add(DisplayName("State", sources.Key) + "："
+                    + string.Join("、", sources.Select(source => DisplayName("Source", source.SourceId)).Distinct()));
+            }
+            lines.AddRange(module.Artifacts.Where(artifact => artifact.PlayerId == player).Select(artifact => artifact.Path).Distinct());
+        }
+        return string.Join("\n", lines);
+    }
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ImportKeyCommand))]
