@@ -59,6 +59,7 @@ public sealed partial class ToolkitViewModel : ViewModelBase
     #region GameDataExport
     /// <summary>游戏数据导出功能开关（持久化 AppSettings.GameDataExportEnable）。</summary>
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ShowGameDataExportCommand))]
     public partial bool? GameDataExportEnable { get; set; }
     #endregion
 
@@ -196,14 +197,16 @@ public sealed partial class ToolkitViewModel : ViewModelBase
         ViewFactorys.ShowMoniterSettingWindow();
     }
 
+    private bool CanShowGameDataExport() => GameDataExportEnable is true;
+
     /// <summary>
     /// 游戏数据导出：打开独立导出窗口（抓取游戏登录流量并导出背包数据）。
     /// 功能开关关闭时直接忽略。
     /// </summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanShowGameDataExport))]
     void ShowGameDataExport()
     {
-        if (GameDataExportEnable == false)
+        if (!CanShowGameDataExport())
             return;
         ViewFactorys.ShowGameDataExportWindow();
     }
