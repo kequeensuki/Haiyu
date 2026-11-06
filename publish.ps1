@@ -26,20 +26,25 @@ $PSNativeCommandUseErrorActionPreference = $false
 $Configuration = if ($Configuration -ieq 'Debug') { 'Debug' } else { 'Release' }
 
 function Initialize-IntegrityReader {
-    if ('Haiyu.Publish.IntegrityReader' -as [type]) { return }
+    # PowerShell 会保留已加载的 Add-Type 类型；版本化避免同一窗口更新脚本后仍使用旧实现。
+    if ('Haiyu.Publish.IntegrityReaderV2' -as [type]) { return }
     # LABEL_SECURITY_INFORMATION 只查询完整性标签，无需读取审计 SACL 的特权。
     # 使用 SID/RID 判定，避免解析 icacls 的本地化显示名称。
     Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace Haiyu.Publish
 {
-    public static class IntegrityReader
+    public static class IntegrityReaderV2
     {
-        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
-        private static extern uint GetNamedSecurityInfoW(string name, int type, uint info,
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+        private static extern SafeFileHandle CreateFileW(string name, uint access, uint share,
+            IntPtr attributes, uint creation, uint flags, IntPtr template);
+        [DllImport("advapi32.dll", ExactSpelling = true)]
+        private static extern uint GetSecurityInfo(SafeFileHandle handle, int type, uint info,
             IntPtr owner, IntPtr group, IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -69,10 +74,40 @@ namespace Haiyu.Publish
             return unchecked((uint)Marshal.ReadInt32(GetSidSubAuthority(sid, (uint)count - 1)));
         }
 
+        public static string ToExtendedPath(string path)
+        {
+            if (String.IsNullOrWhiteSpace(path)) throw new ArgumentException("文件系统路径不能为空。", nameof(path));
+            string fullPath = path.Replace('/', '\\');
+            if (fullPath.StartsWith(@"\\?\", StringComparison.Ordinal)) return fullPath;
+            if (fullPath.StartsWith(@"\\", StringComparison.Ordinal))
+                return @"\\?\UNC\" + fullPath.Substring(2);
+            if (fullPath.Length < 3 || fullPath[1] != ':' || fullPath[2] != '\\'
+                || !((fullPath[0] >= 'A' && fullPath[0] <= 'Z') || (fullPath[0] >= 'a' && fullPath[0] <= 'z')))
+                throw new ArgumentException("完整性检查需要绝对 Windows 文件系统路径。", nameof(path));
+            return @"\\?\" + fullPath;
+        }
+
         public static uint? ReadPath(string path)
         {
+            // 扩展长度路径不依赖 LongPathsEnabled；BACKUP_SEMANTICS 用于打开目录。
+            // OVERLAPPED 避免同步句柄隐含请求 SYNCHRONIZE，兼容目录现有的拒绝 S ACE。
+            // 只请求 READ_CONTROL，共享读/写/删除，不读取文件内容或阻塞编译器。
+            using (SafeFileHandle handle = CreateFileW(ToExtendedPath(path), 0x20000, 0x7,
+                IntPtr.Zero, 3, 0x42000000, IntPtr.Zero))
+            {
+                if (handle.IsInvalid)
+                {
+                    int error = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(error, "无法打开完整性检查对象：" + path + "，Win32 错误：" + error);
+                }
+                return ReadHandle(handle, path);
+            }
+        }
+
+        private static uint? ReadHandle(SafeFileHandle handle, string path)
+        {
             IntPtr sacl, descriptor;
-            uint error = GetNamedSecurityInfoW(path, 1, 0x10, IntPtr.Zero, IntPtr.Zero,
+            uint error = GetSecurityInfo(handle, 1, 0x10, IntPtr.Zero, IntPtr.Zero,
                 IntPtr.Zero, out sacl, out descriptor);
             if (error != 0) throw new Win32Exception((int)error, "无法检查完整性：" + path + "，Win32 错误：" + error);
             try
@@ -122,9 +157,11 @@ namespace Haiyu.Publish
 function Assert-PathIntegrity {
     param([string] $Path)
 
-    $rid = [Haiyu.Publish.IntegrityReader]::ReadPath($Path)
+    $Path = [IO.Path]::GetFullPath($Path)
+    $rid = [Haiyu.Publish.IntegrityReaderV2]::ReadPath($Path)
     if ($null -ne $rid -and $rid -lt 8192) {
-        & $script:Icacls $Path | Out-Host
+        $nativePath = [Haiyu.Publish.IntegrityReaderV2]::ToExtendedPath($Path)
+        & $script:Icacls $nativePath | Out-Host
         $isDirectory = Test-Path -LiteralPath $Path -PathType Container
         $scope = if ($isDirectory) { '目录及其子项继承标签' } else { '此文件的完整性标签' }
         Write-Host "发现 Low/Untrusted 完整性标签 S-1-16-$rid：$Path" -ForegroundColor Yellow
@@ -134,11 +171,11 @@ function Assert-PathIntegrity {
         }
 
         $level = if ($isDirectory) { '(OI)(CI)M' } else { 'M' }
-        & $script:Icacls $Path '/setintegritylevel' $level | Out-Host
+        & $script:Icacls $nativePath '/setintegritylevel' $level | Out-Host
         if ($LASTEXITCODE -ne 0) {
             throw "完整性标签修改失败，退出码：$LASTEXITCODE。请确认当前终端具有修改权限：$Path"
         }
-        $verifiedRid = [Haiyu.Publish.IntegrityReader]::ReadPath($Path)
+        $verifiedRid = [Haiyu.Publish.IntegrityReaderV2]::ReadPath($Path)
         if ($null -ne $verifiedRid -and $verifiedRid -ne 8192) {
             throw "修改后复核失败，完整性仍为 S-1-16-$verifiedRid：$Path。停止发布。"
         }
@@ -251,10 +288,10 @@ try {
     $abiDestination = Join-Path $env:USERPROFILE 'Waves/Haiyu.ABI'
     $script:Icacls = (Get-Command icacls.exe -CommandType Application -ErrorAction Stop).Source
     Initialize-IntegrityReader
-    if ([Haiyu.Publish.IntegrityReader]::ReadProcess() -lt 8192) {
+    if ([Haiyu.Publish.IntegrityReaderV2]::ReadProcess() -lt 8192) {
         throw '当前 PowerShell 进程使用 Low/Untrusted IL 令牌，请从正常完整性的终端重新运行。'
     }
-    & $script:Icacls $PSScriptRoot | Out-Host
+    & $script:Icacls ([Haiyu.Publish.IntegrityReaderV2]::ToExtendedPath($PSScriptRoot)) | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'icacls 无法读取仓库 ACL，停止发布。' }
     Write-Host '正在检查仓库及现有发布文件的完整性标签……'
     Assert-PathIntegrity $script:Dotnet
