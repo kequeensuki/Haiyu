@@ -203,7 +203,7 @@ function Invoke-DotNet {
 }
 
 function Publish-Project {
-    param([string] $Project, [string] $Output, [string[]] $Properties)
+    param([string] $Project, [string] $Output, [string[]] $Properties = @())
 
     $arguments = @('publish', $Project, '--configuration', $Configuration, '--runtime', 'win-x64',
         '--self-contained', 'true', '--output', $Output, '-m:1', '-nr:false', '-p:UseSharedCompilation=false')
@@ -309,10 +309,10 @@ try {
     }
 
     Publish-Project $generatorProject $generatorOutput @('-p:PublishAot=false', '-p:PublishTrimmed=false')
-    Publish-Project $uiProject $uiOutput @('-p:Platform=x64', '-p:PublishProfile=win-x64',
-        '-p:PublishAot=true', '-p:PublishTrimmed=true', '-p:PublishReadyToRun=false')
-    Publish-Project $abiProject $abiOutput @('-p:PublishAot=true', '-p:PublishTrimmed=true',
-        '-p:PublishReadyToRun=false', '-p:NativeLib=Shared')
+    # NativeAOT/裁剪由各项目及 UI 发布配置本地设置。
+    # 命令行全局属性会泄漏到 netstandard 源生成器，引发 NETSDK1207。
+    Publish-Project $uiProject $uiOutput @('-p:Platform=x64')
+    Publish-Project $abiProject $abiOutput
     foreach ($entry in @((Join-Path $generatorOutput 'WavesProtocolGenerator.exe'),
             (Join-Path $uiOutput 'Haiyu.exe'), (Join-Path $abiOutput 'Haiyu.ABI.dll'))) {
         if (-not (Test-Path -LiteralPath $entry -PathType Leaf)) { throw "发布入口文件缺失：$entry" }
