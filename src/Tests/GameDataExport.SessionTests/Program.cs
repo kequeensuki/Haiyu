@@ -7,6 +7,7 @@ using Haiyu.ViewModel.ToolkitsViewModel;
 
 var tests = new (string, Func<Task>)[]
 {
+    ("模块选择持久化、空选择禁用及自动启动请求", PersistedSelectionAsync),
     ("目录驱动的新模块/空选择/禁用背包/通用结果", ModuleSelectionAsync),
     ("PEM 导入校验、持久化与读取兼容", KeyImportTests.BusinessAsync),
     ("导入入口：取消、成功、失败及会话互斥", KeyImportTests.UiAsync),
@@ -42,6 +43,56 @@ static void Send(IProgress<IPrivilegedProgress<GameDataExportProgress>> p, bool 
     p.Report(new PrivilegedProgress<GameDataExportProgress>(PrivilegedStage.Executing, 0, "业务进度",
         new(GameDataExportStage.Capturing, 5, "正在等待游戏连接", ready, data, SessionKeyAcquired: key)));
 
+static async Task PersistedSelectionAsync()
+{
+    var catalog = new FakeCatalog();
+    var selection = FakeSelections.Create(catalog);
+    Check((await selection.CreateRequestAsync())!.ModuleIds!.SequenceEqual(new[] { "inventory" }), "首次使用未沿用模块默认选择");
+    using var launcher = new GameDataExportLauncher(true, (_, _, _) => Task.FromResult(Result()), () => false);
+    using var services = new ServiceCollection().AddSingleton(launcher).BuildServiceProvider();
+    Instance.Host = new TestHost(services);
+    var previous = SynchronizationContext.Current;
+    SynchronizationContext.SetSynchronizationContext(new SynchronizationContext());
+    try
+    {
+        using (var vm = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService(), catalog, selection))
+        {
+            await vm.LoadModulesCommand.ExecuteAsync(null);
+            vm.Modules.Single(module => module.Id == "inventory").IsSelected = false;
+            vm.Modules.Single(module => module.Id == "server-messages").IsSelected = true;
+        }
+        using (var reopened = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService(), catalog, selection))
+        {
+            await reopened.LoadModulesCommand.ExecuteAsync(null);
+            Check(reopened.Modules.Where(module => module.IsSelected).Select(module => module.Id).SequenceEqual(new[] { "server-messages" }),
+                "重开窗口丢失了模块选择");
+            Check((await selection.CreateRequestAsync())!.ModuleIds!.SequenceEqual(new[] { "server-messages" }), "自动请求没有使用保存的选择");
+            reopened.Modules.Single(module => module.Id == "server-messages").IsSelected = false;
+            Check(!reopened.StartExportCommand.CanExecute(null), "空选择未禁用开始导出");
+        }
+        var calls = catalog.Calls;
+        Check(await selection.CreateRequestAsync() is null && catalog.Calls == calls, "空选择仍查询高权限目录或发起自动请求");
+        using var empty = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService(), catalog, selection);
+        await empty.LoadModulesCommand.ExecuteAsync(null);
+        Check(empty.Modules.All(module => !module.IsSelected) && !empty.StartExportCommand.CanExecute(null), "空选择被错误恢复成默认值");
+        empty.Modules.Single(module => module.Id == "future").IsSelected = true;
+        Check(empty.StartExportCommand.CanExecute(null), "重新选择模块后未恢复开始导出按钮");
+    }
+    finally { SynchronizationContext.SetSynchronizationContext(previous); }
+    GameDataExportRequest? autoRequest = null;
+    var finished = new TaskCompletionSource<GameDataExportResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+    using var automatic = new GameDataExportLauncher(true, (request, progress, _) =>
+    {
+        autoRequest = request;
+        Send(progress, ready: true);
+        return finished.Task;
+    }, () => false);
+    Check(await automatic.StartSessionForAutoLaunchAsync(await selection.CreateRequestAsync()), "自动启动未就绪");
+    Check(autoRequest!.ModuleIds!.SequenceEqual(new[] { "future" }), "自动启动仍隐式选择背包模块");
+    finished.SetResult(Result());
+    await automatic.StopAsync();
+}
+
 static Task ModuleSelectionAsync()
 {
     var previous = SynchronizationContext.Current;
@@ -52,12 +103,12 @@ static Task ModuleSelectionAsync()
         var done = new TaskCompletionSource<GameDataExportResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var launcher = new GameDataExportLauncher(true, (request, _, _) => { selected = request; return done.Task; }, () => false);
         using var services = new ServiceCollection().AddSingleton(launcher).BuildServiceProvider(); Instance.Host = new TestHost(services);
-        using var vm = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService(), new FakeCatalog());
+        using var vm = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService(), new FakeCatalog(), FakeSelections.Create());
         vm.LoadModulesCommand.ExecuteAsync(null).GetAwaiter().GetResult();
         Check(vm.Modules.Count == 3, "界面没有使用宿主目录中的新模块");
         foreach (var item in vm.Modules) item.IsSelected = false;
         vm.StartExportCommand.Execute(null);
-        Check(selected is null && vm.HasResult && !launcher.IsSessionActive, "空选择启动了后台捕获");
+        Check(selected is null && !vm.StartExportCommand.CanExecute(null) && !launcher.IsSessionActive, "空选择未禁用开始导出");
         vm.Modules.Single(m => m.Id == "future").IsSelected = true;
         vm.StartExportCommand.Execute(null);
         Check(SpinWait.SpinUntil(() => selected is not null, TimeSpan.FromSeconds(2)), "新模块未启动");
@@ -88,14 +139,14 @@ static Task EventModeAsync()
                 new(GameDataExportStage.Monitoring,100,"消息导出中",EventExport:stats)));return done.Task;
         },()=>false);
         using var services=new ServiceCollection().AddSingleton(launcher).BuildServiceProvider();Instance.Host=new TestHost(services);
-        using var vm=new GameDataExportViewModel(new ViewFactory(),new WindowSession(),new FakeKeyService(), new FakeCatalog());
+        using var vm=new GameDataExportViewModel(new ViewFactory(),new WindowSession(),new FakeKeyService(), new FakeCatalog(), FakeSelections.Create());
         vm.LoadModulesCommand.ExecuteAsync(null).GetAwaiter().GetResult();
         vm.Modules.Single(m=>m.Id=="server-messages").IsSelected=true;vm.StartExportCommand.Execute(null);
         Check(SpinWait.SpinUntil(()=>selected is not null,TimeSpan.FromSeconds(2)),"没有发起导出");
         Check(selected!.ModuleIds!.Contains("server-messages") && selected.ModuleIds.Contains("inventory"),"全量模式未传至业务层");
         Check(SpinWait.SpinUntil(()=>launcher.LastBusinessProgress?.EventExport!=null,TimeSpan.FromSeconds(2)),"事件进度未到达");ui.Drain();
         Check(!vm.CanChooseExportMode && vm.ProgressMessage.Contains("12") && vm.ProgressMessage.Contains("manifest.json"),"事件进度或模式锁定不正确");
-        using var reopened=new GameDataExportViewModel(new ViewFactory(),new WindowSession(),new FakeKeyService(), new FakeCatalog());
+        using var reopened=new GameDataExportViewModel(new ViewFactory(),new WindowSession(),new FakeKeyService(), new FakeCatalog(), FakeSelections.Create());
         reopened.LoadModulesCommand.ExecuteAsync(null).GetAwaiter().GetResult();
         Check(reopened.Modules.Single(m=>m.Id=="server-messages").IsSelected,"重新打开窗口没有反映正在运行的全量模式");
         done.SetResult(Result() with{EventExport=stats});
@@ -291,7 +342,7 @@ static Task WindowAsync()
         Instance.Host = new TestHost(services);
         launcher.TryStart(out var task);
         SpinWait.SpinUntil(() => launcher.LastProgress is not null, TimeSpan.FromSeconds(2));
-        using var vm = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService(), new FakeCatalog());
+        using var vm = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService(), new FakeCatalog(), FakeSelections.Create());
         Check(vm.IsExporting && vm.ProgressValue == 5, "自动会话打开窗口后仍显示未开始");
         void Report(GameDataExportProgress data)
         {
@@ -323,7 +374,7 @@ static Task WindowAsync()
             && vm.ResultMessage.Contains("玩家 456") && vm.ResultMessage.Contains("普通道具 451")
             && vm.ResultMessage.Contains("声骸 40") && vm.ResultMessage.Contains("123/latest.json")
             && vm.ResultMessage.Contains("456/new.json"), "结束后丢失多玩家统计或路径");
-        using var reopened = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService(), new FakeCatalog());
+        using var reopened = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService(), new FakeCatalog(), FakeSelections.Create());
         Check(reopened.HasResult && reopened.ResultMessage == vm.ResultMessage, "重新打开窗口丢失本次捕获汇总");
         services.Dispose();
     }
@@ -333,7 +384,7 @@ static Task WindowAsync()
 [MethodImpl(MethodImplOptions.NoInlining)]
 static WeakReference ClosedWindow(PumpContext ui)
 {
-    var vm = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService(), new FakeCatalog());
+    var vm = new GameDataExportViewModel(new ViewFactory(), new WindowSession(), new FakeKeyService(), new FakeCatalog(), FakeSelections.Create());
     vm.StartExportCommand.Execute(null);
     vm.Dispose();
     ui.Drain();

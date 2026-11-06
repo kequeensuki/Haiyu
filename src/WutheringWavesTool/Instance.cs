@@ -269,6 +269,7 @@ public static class InstanceBuilderExtensions
                     .AddSingleton<Haiyu.Services.GameDataExportLauncher>()
                     .AddSingleton<IGameDataExportKeyService, GameDataExportKeyService>()
                     .AddSingleton<IGameDataExportCatalogService, GameDataExportCatalogService>()
+                    .AddSingleton<IGameDataExportSelectionService, GameDataExportSelectionService>()
                     #endregion
                     #region Toolkit
                     .AddTransient<ToolkitPage>()

@@ -154,7 +154,8 @@ internal static class KeyImportTests
             Instance.Host = new TestHost(services);
             var session = new WindowSession();
             var keys = new FakeKeyService();
-            using var vm = new GameDataExportViewModel(new ViewFactory(), session, keys, new FakeCatalog());
+            using var vm = new GameDataExportViewModel(new ViewFactory(), session, keys, new FakeCatalog(), FakeSelections.Create());
+            Finish(vm.LoadModulesCommand.ExecuteAsync(null));
             Finish(vm.ImportKeyCommand.ExecuteAsync(null)); // 用户取消文件选择。
             Check(keys.Calls == 0 && vm.KeyImportMessage == string.Empty, "取消选择仍调用业务服务");
             session.Context.PickersService.Pick = extensions =>

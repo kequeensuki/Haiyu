@@ -23,13 +23,16 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
     private readonly WindowSession _windowSession;
     private readonly IGameDataExportKeyService _keyService;
     private readonly IGameDataExportCatalogService _catalog;
+    private readonly IGameDataExportSelectionService _selection;
 
-    public GameDataExportViewModel(IViewFactorys viewFactorys, WindowSession windowSession, IGameDataExportKeyService keyService, IGameDataExportCatalogService catalog)
+    public GameDataExportViewModel(IViewFactorys viewFactorys, WindowSession windowSession, IGameDataExportKeyService keyService,
+        IGameDataExportCatalogService catalog, IGameDataExportSelectionService selection)
     {
         ViewFactorys = viewFactorys;
         _windowSession = windowSession;
         _keyService = keyService;
         _catalog = catalog;
+        _selection = selection;
         _launcher = Instance.Host.Services.GetRequiredService<Services.GameDataExportLauncher>();
         // 窗口仅观察应用会话，不持有 await session 的长期 continuation。
         var dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread()
@@ -119,6 +122,7 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
     {
         _launcher.ProgressChanged -= OnProgressChanged;
         _launcher.StateChanged -= OnStateChanged;
+        foreach (var module in Modules) module.PropertyChanged -= OnModuleSelectionChanged;
         base.OnDisposing();
     }
 
@@ -155,18 +159,39 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
         try
         {
             var descriptors = await _catalog.GetAsync(LifetimeToken);
+            var selected = await _selection.GetAsync(LifetimeToken);
             if (IsDisposed) return;
             foreach (var descriptor in descriptors)
             {
                 var name = LanguageService.GetString(descriptor.NameKey);
                 if (string.IsNullOrWhiteSpace(name) || name == descriptor.NameKey) name = descriptor.DisplayName;
-                Modules.Add(new(descriptor.Id, name, descriptor.DefaultSelected));
+                var module = new GameDataExportModuleSelection(descriptor.Id, name,
+                    selected is null ? descriptor.DefaultSelected : selected.Contains(descriptor.Id, StringComparer.Ordinal));
+                module.PropertyChanged += OnModuleSelectionChanged;
+                Modules.Add(module);
             }
             SynchronizeSession();
         }
         catch (OperationCanceledException) when (IsDisposed) { }
         catch (Exception ex) { if (!IsDisposed) { HasResult = true; ResultMessage = ex.Message; } }
         finally { if (!IsDisposed) IsLoadingModules = false; }
+    }
+
+    private void OnModuleSelectionChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs args)
+    {
+        if (args.PropertyName != nameof(GameDataExportModuleSelection.IsSelected)) return;
+        StartExportCommand.NotifyCanExecuteChanged();
+        if (!IsExporting && !IsDisposed)
+            _ = SaveSelectionAsync(Modules.Where(module => module.IsSelected).Select(module => module.Id).ToArray());
+    }
+
+    private async Task SaveSelectionAsync(string[] ids)
+    {
+        try { await _selection.SaveAsync(ids); }
+        catch (Exception ex)
+        {
+            if (!IsDisposed) { HasResult = true; ResultMessage = ex.Message; }
+        }
     }
 
     private static string DisplayName(string kind, string value)
@@ -234,7 +259,7 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
     public bool CanChooseExportMode => !IsExporting;
 
     private bool CanImportKey() => !IsDisposed && !IsExporting && !IsImportingKey;
-    private bool CanStartExport() => !IsDisposed && !IsImportingKey && !IsLoadingModules;
+    private bool CanStartExport() => !IsDisposed && !IsImportingKey && !IsLoadingModules && Modules.Any(module => module.IsSelected);
 
     /// <summary>窗口只负责选择文件与展示结果，私钥校验和保存由业务服务完成。</summary>
     [RelayCommand(CanExecute = nameof(CanImportKey))]
@@ -276,7 +301,7 @@ public sealed partial class GameDataExportViewModel : ViewModelBase
     [RelayCommand(CanExecute = nameof(CanStartExport))]
     private void StartExport()
     {
-        if (IsDisposed || IsImportingKey)
+        if (!CanStartExport())
             return;
         try
         {

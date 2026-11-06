@@ -90,6 +90,9 @@ partial class KuroGameContextViewModelV2
         var tipShow = AppContext.WindowManager.Shell.TipShow;
         try
         {
+            var request = await Instance.Host.Services.GetRequiredService<IGameDataExportSelectionService>()
+                .CreateRequestAsync();
+            if (request is null) return;
             var launcher = Instance.Host.Services.GetRequiredService<Services.GameDataExportLauncher>();
 
             // 订阅一次性提示（Launcher 是单例，避免重复订阅——用局部标志）
@@ -124,7 +127,7 @@ partial class KuroGameContextViewModelV2
                 // 空转计时由 Launcher 按会话持有，不依赖游戏页面的 CTS。
             }
 
-            var ready = await launcher.StartSessionForAutoLaunchAsync();
+            var ready = await launcher.StartSessionForAutoLaunchAsync(request);
             if (ready)
             {
                 await tipShow.ShowMessageAsync(

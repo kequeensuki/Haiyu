@@ -165,9 +165,9 @@ public sealed partial class GameDataExportLauncher : IDisposable, IAsyncDisposab
     }
 
     /// <summary>只等待网卡启动成功；初始化失败或超时返回 false，调用方仍可继续启动游戏。</summary>
-    public async Task<bool> StartSessionForAutoLaunchAsync()
+    public async Task<bool> StartSessionForAutoLaunchAsync(GameDataExportRequest? request = null)
     {
-        TryStart(out _);
+        TryStart(out _, request ?? new GameDataExportRequest(GameDataExportScope.Inventory));
         Session session;
         lock (_gate) session = _session!;
         try
