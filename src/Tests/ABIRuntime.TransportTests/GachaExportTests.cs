@@ -262,7 +262,7 @@ internal static partial class Program
         Equal(0, HttpGachaRecordEndpoint.Parse("{\"code\":200,\"data\":[]}").Code);
         // 裸数字的池显示文本（实测 8/9/12/13）不能解析失败。
         var numeric = HttpGachaRecordEndpoint.Parse(
-            "{\"code\":0,\"data\":[{\"cardPoolType\":8,\"resourceId\":1,\"time\":\"2026-11-01 10:00:00\"}]}");
+            "{\"code\":0,\"data\":[{\"cardPoolType\":8,\"resourceId\":1,\"qualityLevel\":3,\"resourceType\":\"武器\",\"name\":\"x\",\"count\":1,\"time\":\"2026-11-01 10:00:00\"}]}");
         Equal(1, numeric.Records.Count);
         Equal("8", numeric.Records[0].CardPoolType);
     }

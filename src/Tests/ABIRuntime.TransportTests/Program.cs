@@ -1,3 +1,4 @@
+using GameDataExportRegression;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Security.Cryptography;
@@ -37,6 +38,12 @@ internal static partial class Program
             ("邮件：同步/新增/阅读/领取/收藏/删除/序列化", TestMailMutationChainAsync),
             ("邮件：失败响应/批量回滚/多玩家与重登恢复", TestMailFailureAndIsolationAsync),
             ("邮件：缺失基线/未读状态/缺失目标保护", TestMailMissingBaselineAsync),
+            ("抽卡修复：生产凭证/重登换号/实际HTTP与ABI", GachaRegression.ProductionAsync),
+            ("抽卡修复：全失败/部分失败/合法空池", GachaRegression.FailureStatesAsync),
+            ("抽卡修复：结构损坏/账号错配/历史保护", GachaRegression.CorruptHistoryAsync),
+            ("抽卡修复：跨语言身份/窗口缩短/只增契约", GachaRegression.LocaleIdentityAsync),
+            ("抽卡修复：缓存失效当次恢复/探测范围", GachaRegression.CacheRecoveryAsync),
+            ("抽卡修复：损坏HTTP响应拒绝空成功", GachaRegression.MalformedResponseAsync),
             ("抽卡：区服探测/code 分流/缓存跳过", TestGachaServerProbeAsync),
             ("抽卡：只增累积/occurrence/幂等/序列化", TestGachaAccumulationAsync),
             ("抽卡：损坏文件拒绝覆盖/缓存降级", TestGachaStoreRecoveryAsync),
@@ -94,7 +101,7 @@ internal static partial class Program
         };
 
         if (args.Contains("--game-data-export"))
-            tests = tests.Where(t => t.Run == TestRoleRepeatedValuesAsync || t.Run == TestRoleInitializationOrderAsync || t.Run == TestAggregateEntityCompletenessAsync || t.Run == TestRoleListMergeAndOptionalResponseAsync || t.Run == TestRoleDataChainAsync || t.Run == TestRoleEquipmentChainAsync || t.Run == TestRoleRecoveryAndIsolationAsync || t.Run == TestAchievementStatesAsync || t.Run == TestAchievementRewardAndRollbackAsync || t.Run == TestAchievementBaselineAndIsolationAsync || t.Run == TestSameAccountReloginSnapshotAsync || t.Run == TestMailMutationChainAsync || t.Run == TestMailFailureAndIsolationAsync || t.Run == TestMailMissingBaselineAsync || t.Run == TestGachaServerProbeAsync || t.Run == TestGachaAccumulationAsync || t.Run == TestGachaStoreRecoveryAsync || t.Run == TestGachaWireParsingAsync || t.Run == TestGachaModuleWiringAsync || t.Run == TestDataCollectionContractAsync || t.Run == TestDomainCollectionOverridesAsync || t.Run == TestInventoryAdapterExtensionAsync || t.Run == TestConfirmedResumeNotificationAsync || t.Run == TestFilteredMessageModulesAsync || t.Run == TestModuleCompletionStatesAsync || t.Run == TestInventoryPendingVersionAsync || t.Run == TestAggregateSourcesAsync || t.Run == TestAggregatePagesAndDeltasAsync || t.Run == TestSharedOutputFencingAsync || t.Run == TestExportModuleRegistryAsync || t.Run == TestInventoryModuleIsolationAsync || t.Run == TestExportConsumerBoundariesAsync || t.Run == TestLoginIsolationAsync || t.Run == TestFrameValidationAsync
+            tests = tests.Where(t => t.Run == GachaRegression.ProductionAsync || t.Run == GachaRegression.FailureStatesAsync || t.Run == GachaRegression.CorruptHistoryAsync || t.Run == GachaRegression.LocaleIdentityAsync || t.Run == GachaRegression.CacheRecoveryAsync || t.Run == GachaRegression.MalformedResponseAsync || t.Run == TestRoleRepeatedValuesAsync || t.Run == TestRoleInitializationOrderAsync || t.Run == TestAggregateEntityCompletenessAsync || t.Run == TestRoleListMergeAndOptionalResponseAsync || t.Run == TestRoleDataChainAsync || t.Run == TestRoleEquipmentChainAsync || t.Run == TestRoleRecoveryAndIsolationAsync || t.Run == TestAchievementStatesAsync || t.Run == TestAchievementRewardAndRollbackAsync || t.Run == TestAchievementBaselineAndIsolationAsync || t.Run == TestSameAccountReloginSnapshotAsync || t.Run == TestMailMutationChainAsync || t.Run == TestMailFailureAndIsolationAsync || t.Run == TestMailMissingBaselineAsync || t.Run == TestGachaServerProbeAsync || t.Run == TestGachaAccumulationAsync || t.Run == TestGachaStoreRecoveryAsync || t.Run == TestGachaWireParsingAsync || t.Run == TestGachaModuleWiringAsync || t.Run == TestDataCollectionContractAsync || t.Run == TestDomainCollectionOverridesAsync || t.Run == TestInventoryAdapterExtensionAsync || t.Run == TestConfirmedResumeNotificationAsync || t.Run == TestFilteredMessageModulesAsync || t.Run == TestModuleCompletionStatesAsync || t.Run == TestInventoryPendingVersionAsync || t.Run == TestAggregateSourcesAsync || t.Run == TestAggregatePagesAndDeltasAsync || t.Run == TestSharedOutputFencingAsync || t.Run == TestExportModuleRegistryAsync || t.Run == TestInventoryModuleIsolationAsync || t.Run == TestExportConsumerBoundariesAsync || t.Run == TestLoginIsolationAsync || t.Run == TestFrameValidationAsync
                 || t.Run == TestParallelDecryptionAsync || t.Run == TestExportResultIsolationAsync
                 || t.Run == TestConnectionEndpointIsolationAsync || t.Run == TestSlowExportDrainAsync || t.Run == TestFullProtocolAsync || t.Run == TestEventFilesAsync || t.Run == TestKcpStreamWatermarkAsync
                 || t.Run == TestInventoryCaptureAsync || t.Run == TestPlayerIdResolverAsync

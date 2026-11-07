@@ -5,12 +5,12 @@ namespace ABI.Models;
 
 /*
  抽卡记录（Gacha）ABI 模型。
- 数据来自 HTTP 抽卡记录接口，不来自 TCP 下行；
+ 历史内容来自 HTTP，查询凭证来自游戏下行；
  产物独立落盘到 <playerId>/gacha/record.json，不并入 game-data.json。
  */
 
 /// <summary>
-/// 抽卡记录拉取参数。由主程序在启动导出时填入（recordId 来自抓包得到的 GachaInfoResponse）。
+/// 抽卡记录拉取参数。可用于显式调用；生产默认从已验证会话的 GachaInfoResponse 获取 recordId。
 /// 全部字段为空时模块报告 NoData，不发起任何网络请求。
 /// </summary>
 [MemoryPackable]

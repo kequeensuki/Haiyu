@@ -11,6 +11,7 @@
     <ProjectReference Include="..\..\Extensions\ABI\ABIRuntime\ABIRuntime.csproj" />
     <ProjectReference Include="..\..\Extensions\Haiyu.ABI\Haiyu.ABI.csproj" />
     <Compile Include="../../WutheringWavesTool/Services/GameDataExportLauncher.cs" Link="GameDataExportLauncher.cs" />
+    <Compile Include="../GameDataExport.ProtocolSmoke/GachaRegression.cs" Link="GachaRegression.cs" />
     <Compile Include="../GameDataExport.SessionTests/ExportTestClock.cs" Link="ExportTestClock.cs" />
   </ItemGroup>
 </Project>

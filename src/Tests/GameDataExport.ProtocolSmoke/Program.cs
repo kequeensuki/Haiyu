@@ -1,3 +1,4 @@
+using GameDataExportRegression;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using ABI.Models;
@@ -13,6 +14,14 @@ using Haiyu.ABI.Services.GameDataExport.Modules;
 using Haiyu.ABI.Services.GameDataExport.Storage;
 
 var watch = System.Diagnostics.Stopwatch.StartNew();
+ABIMemoryPack.EnsureFormatters();
+await GachaRegression.ProductionAsync();
+await GachaRegression.FailureStatesAsync();
+await GachaRegression.CorruptHistoryAsync();
+await GachaRegression.LocaleIdentityAsync();
+await GachaRegression.CacheRecoveryAsync();
+await GachaRegression.MalformedResponseAsync();
+Console.WriteLine("PASS NativeAOT gacha regression: production factory, real HTTP serialization, sessions, failures, history, locale, cache, malformed responses");
 ABIMemoryPack.EnsureFormatters();
 var catalog = ProtocolCatalog.Default.Value;
 var decoder = new ProtocolJsonDecoder(catalog);

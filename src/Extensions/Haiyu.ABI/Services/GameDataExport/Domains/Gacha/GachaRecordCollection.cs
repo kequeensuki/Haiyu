@@ -9,29 +9,19 @@ internal abstract record GachaChange;
 /// <summary>加入一条已完成归一的记录；重复键幂等。</summary>
 internal sealed record GachaRecordAdded(GachaRecordState Value) : GachaChange;
 
-/// <summary>
-/// 跨会话累积的抽卡记录集合。
-/// <para>
-/// <b>只增语义</b>：<see cref="Aggregation.Collections.DataCollectionBase{TKey,TEntity,TChange}.Update"/>
-/// 与 <see cref="Aggregation.Collections.DataCollectionBase{TKey,TEntity,TChange}.Remove"/> 保留基类默认行为
-/// （缺目标返回 MissingTarget、删不存在返回 Unchanged），本集合不赋予任何业务语义。
-/// </para>
-/// <para>
-/// 合并基线来自已落盘的旧文件。旧记录永远不被新数据删除——这正是跨会话累积的意义：
-/// 官方接口只保留有限时间，过期后本地仍需保留。
-/// </para>
-/// </summary>
+/// <summary>只增历史：已有身份保留，修改和删除显式拒绝。</summary>
 internal sealed class GachaRecordCollection(IEnumerable<GachaRecordState> baseline)
     : DataCollectionBase<GachaRecordKey, GachaRecordState, GachaChange>(
-        baseline, value => value.Key, _ => true, Comparer<GachaRecordKey>.Create((a, b) => a.CompareTo(b)))
+        baseline, value => value.Key, key => key.CardPoolType > 0 && key.ResourceId > 0
+            && key.QualityLevel > 0 && key.Count > 0 && key.Occurrence >= 0 && !string.IsNullOrWhiteSpace(key.Time), Comparer<GachaRecordKey>.Create((a, b) => a.CompareTo(b)))
 {
-    /// <summary>新增即插入；同键已存在时幂等（Unchanged），绝不覆盖已有记录。</summary>
-    public override ChangeResult Add(GachaRecordState entity) => Replace(entity.Key, entity);
+    public override ChangeResult Add(GachaRecordState entity) => base.Add(entity);
 
     public override ChangeResult Update(GachaRecordKey key, GachaChange change) =>
-        change is GachaRecordAdded added
-            ? Replace(added.Value.Key, added.Value)
-            : base.Update(key, change);
+        ChangeResult.Invalid("抽卡历史不支持修改。");
+
+    public override ChangeResult Remove(GachaRecordKey key) =>
+        ChangeResult.Invalid("抽卡历史不支持删除。");
 
     protected override GachaRecordState Merge(GachaRecordState current, GachaChange change) =>
         throw new InvalidDataException("抽卡记录不支持合并变更。");

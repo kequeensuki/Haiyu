@@ -16,22 +16,21 @@ internal static class GachaRecordNormalizer
     internal static IReadOnlyList<GachaRecordState> Normalize(
         IEnumerable<GachaWireRecord> records, int cardPoolType)
     {
-        var seen = new Dictionary<(string Time, int ResourceId, int QualityLevel, string ResourceType, string Name, int Count), int>();
+        var seen = new Dictionary<(string Time, int ResourceId, int QualityLevel, int Count), int>();
         var result = new List<GachaRecordState>();
         foreach (var record in records)
         {
-            var shape = (record.Time, record.ResourceId, record.QualityLevel, record.ResourceType, record.Name,
-                record.Count);
+            var shape = (record.Time, record.ResourceId, record.QualityLevel, record.Count);
             var occurrence = seen.TryGetValue(shape, out var previous) ? previous + 1 : 0;
             seen[shape] = occurrence;
             var key = new GachaRecordKey(cardPoolType, record.Time, record.ResourceId, record.QualityLevel,
-                record.ResourceType, record.Name, record.Count, occurrence);
+                record.Count, occurrence);
             // 接口返回的 cardPoolType 可能是空或裸数字（实测 8/9/12/13），
             // 因此标签以请求时的池编号查官方表为准，接口文本只在表未收录时兜底。
             var label = GachaPoolTypes.Label(cardPoolType);
             if (label is null && !string.IsNullOrWhiteSpace(record.CardPoolType))
                 label = record.CardPoolType;
-            result.Add(new GachaRecordState(key, label ?? GachaPoolTypes.DisplayLabel(cardPoolType)));
+            result.Add(new GachaRecordState(key, label ?? GachaPoolTypes.DisplayLabel(cardPoolType), record.ResourceType, record.Name));
         }
         return result;
     }
@@ -57,57 +56,68 @@ internal sealed class GachaRecordStore
         Path.Combine(playerId.ToString(CultureInfo.InvariantCulture), "gacha", RecordFileName);
 
     /// <summary>读取旧文件中的记录。文件不存在返回空集合；损坏抛异常（由调用方保留旧文件并报错）。</summary>
-    internal static IReadOnlyList<GachaRecordState> LoadExisting(string path)
+    internal static IReadOnlyList<GachaRecordState> LoadExisting(string path, int? expectedPlayerId = null)
     {
         if (!File.Exists(path)) return [];
-        byte[] bytes;
         try
         {
-            bytes = File.ReadAllBytes(path);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            throw new InvalidDataException("无法读取已有的抽卡记录文件，本次不写入以免覆盖历史：" + ex.Message, ex);
-        }
-        try
-        {
-            using var document = JsonDocument.Parse(bytes);
+            using var document = JsonDocument.Parse(File.ReadAllBytes(path));
             var root = document.RootElement;
-            var version = root.TryGetProperty("schemaVersion", out var versionElement)
-                && versionElement.TryGetInt32(out var parsedVersion) ? parsedVersion : 0;
-            if (version != SchemaVersion)
-                throw new InvalidDataException(
-                    $"已有的抽卡记录 schemaVersion={version} 与当前 {SchemaVersion} 不符，本次不写入以免丢数据。");
-
+            if (StrictJson.Int(root, "schemaVersion") != SchemaVersion)
+                throw new InvalidDataException("抽卡历史版本不兼容，保留原文件。");
+            var player = StrictJson.Int(root, "playerId", min: 1);
+            if (expectedPlayerId is { } expectedPlayer && player != expectedPlayer)
+                throw new InvalidDataException("抽卡历史的玩家身份不匹配，保留原文件。");
+            _ = StrictJson.String(root, "updatedAt");
+            var query = StrictJson.Property(root, "query", JsonValueKind.Object);
+            foreach (var field in new[] { "serverId", "serverArea", "recordId", "cardPoolId", "languageCode", "serverResolvedBy" })
+                _ = StrictJson.String(query, field, allowEmpty: field is "cardPoolId");
+            foreach (var field in new[] { "fetchedPoolTypes", "failedPoolTypes" })
+                foreach (var pool in StrictJson.Property(query, field, JsonValueKind.Array).EnumerateArray())
+                    if (pool.ValueKind != JsonValueKind.Number || !pool.TryGetInt32(out var id) || id <= 0)
+                        throw new InvalidDataException("抽卡历史查询池结构损坏。");
+            var totals = StrictJson.Property(root, "totals", JsonValueKind.Object);
+            var pools = StrictJson.Property(root, "pools", JsonValueKind.Array);
             var result = new List<GachaRecordState>();
-            if (!root.TryGetProperty("pools", out var pools) || pools.ValueKind != JsonValueKind.Array)
-                return result;
+            var poolIds = new HashSet<int>();
+            var legacyKeys = new HashSet<(GachaRecordKey Key, string Type, string Name)>();
             foreach (var pool in pools.EnumerateArray())
             {
-                if (pool.ValueKind != JsonValueKind.Object) continue;
-                if (!pool.TryGetProperty("cardPoolType", out var typeElement)
-                    || !typeElement.TryGetInt32(out var cardPoolType)) continue;
-                if (!pool.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array) continue;
+                var type = StrictJson.Int(pool, "cardPoolType", min: 1);
+                if (!poolIds.Add(type)) throw new InvalidDataException("抽卡历史池重复。");
+                var items = StrictJson.Property(pool, "items", JsonValueKind.Array);
+                if (StrictJson.Int(pool, "count") != items.GetArrayLength())
+                    throw new InvalidDataException("抽卡历史池计数不一致。");
                 foreach (var item in items.EnumerateArray())
                 {
-                    if (item.ValueKind != JsonValueKind.Object) continue;
-                    result.Add(new GachaRecordState(new GachaRecordKey(
-                        cardPoolType,
-                        ReadString(item, "time"),
-                        ReadInt32(item, "resourceId"),
-                        ReadInt32(item, "qualityLevel"),
-                        ReadString(item, "resourceType"),
-                        ReadString(item, "name"),
-                        ReadInt32(item, "count"),
-                        ReadInt32(item, "occurrence")),
-                        ReadString(item, "poolLabel")));
+                    if (StrictJson.Int(item, "cardPoolType", min: 1) != type)
+                        throw new InvalidDataException("抽卡历史条目池身份不一致。");
+                    var key = new GachaRecordKey(type, StrictJson.String(item, "time"),
+                        StrictJson.Int(item, "resourceId", min: 1), StrictJson.Int(item, "qualityLevel", min: 1),
+                        StrictJson.Int(item, "count", min: 1), StrictJson.Int(item, "occurrence"));
+                    var state = new GachaRecordState(key, StrictJson.String(item, "poolLabel", allowEmpty: true),
+                        StrictJson.String(item, "resourceType"), StrictJson.String(item, "name"));
+                    if (!legacyKeys.Add((key, state.ResourceType, state.Name)))
+                        throw new InvalidDataException("抽卡历史存在重复身份。");
+                    result.Add(state);
                 }
             }
-            return result;
+            if (StrictJson.Int(totals, "count") != result.Count || StrictJson.Int(totals, "poolCount") != poolIds.Count)
+                throw new InvalidDataException("抽卡历史总计数不一致。");
+            var times = result.Select(r => r.Time).Order(StringComparer.Ordinal).ToArray();
+            foreach (var (field, expected) in new[] { ("firstTime", times.FirstOrDefault()), ("lastTime", times.LastOrDefault()) })
+            {
+                if (!totals.TryGetProperty(field, out var value) ||
+                    (expected is null ? value.ValueKind != JsonValueKind.Null
+                        : value.ValueKind != JsonValueKind.String || value.GetString() != expected))
+                    throw new InvalidDataException("抽卡历史时间范围不一致。");
+            }
+            // v1 曾将翻译纳入键；保留各稳定身份的最大 occurrence，不累加翻译副本。
+            return result.DistinctBy(record => record.Key).ToArray();
         }
-        catch (JsonException ex)
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
-            throw new InvalidDataException("已有的抽卡记录文件不是合法 JSON，本次不写入以免覆盖历史。", ex);
+            throw new InvalidDataException("无法安全读取抽卡历史，保留原文件：" + ex.Message, ex);
         }
     }
 
@@ -121,7 +131,7 @@ internal sealed class GachaRecordStore
         GameGachaQuery query,
         DateTimeOffset updatedAt)
     {
-        var collection = new GachaRecordCollection(existing);
+        var collection = new GachaRecordCollection(existing.DistinctBy(record => record.Key));
         fetched.ToList().ForEach(record => collection.Add(record));
 
         var all = collection.Snapshot();
@@ -155,11 +165,4 @@ internal sealed class GachaRecordStore
         record.CardPoolType, record.PoolLabel, record.ResourceId, record.QualityLevel,
         record.ResourceType, record.Name, record.Count, record.Time, record.Occurrence);
 
-    private static string ReadString(JsonElement element, string name) =>
-        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString() ?? "" : "";
-
-    private static int ReadInt32(JsonElement element, string name) =>
-        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
-            && value.TryGetInt32(out var parsed) ? parsed : 0;
 }

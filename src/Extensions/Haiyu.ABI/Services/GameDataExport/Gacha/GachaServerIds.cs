@@ -51,7 +51,7 @@ internal interface IGachaServerCache
 {
     GachaServerBinding? TryGet(int playerId);
     void Set(int playerId, GachaServerBinding binding);
-    /// <summary>缓存值已失效（接口返回 -4）时移除，让下一次重新探测。</summary>
+    /// <summary>缓存值已失效（接口返回 -4）时移除，由调用方当次有界重新探测。</summary>
     void Remove(int playerId);
 }
 
@@ -89,7 +89,10 @@ internal sealed class GachaServerCache : IGachaServerCache
         {
             using var document = JsonDocument.Parse(bytes);
             var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) return cache;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("schemaVersion", out var version)
+                || version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var number)
+                || number != SchemaVersion) return cache;
             if (!root.TryGetProperty("servers", out var servers) || servers.ValueKind != JsonValueKind.Object)
                 return cache;
             foreach (var entry in servers.EnumerateObject())

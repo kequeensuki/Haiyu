@@ -8,7 +8,7 @@ namespace Haiyu.ABI.Services.GameDataExport.Modules;
 internal static class BuiltInExportModules
 {
     /// <param name="gachaRequest">
-    /// 抽卡参数；由服务在启动会话时传入。为 null 时仍注册 <c>gacha</c> 模块（目录可见、可选择），
+    /// 可选的显式抽卡参数；生产默认从已验证会话消息取得。为 null 时仍注册 <c>gacha</c> 模块，
     /// 但没有 record_id 时模块自身报告 NoData，不发起请求也不创建空文件。
     /// </param>
     /// <param name="gachaEndpoint">抽卡 HTTP 端点；测试注入假端点，生产传 null 由服务创建。</param>
@@ -22,7 +22,7 @@ internal static class BuiltInExportModules
             descriptor: ItemChangeMessages.Definition, messageIds: ItemChangeMessages.MessageIds)),
         // 抽卡记录：唯一主动请求模块，参数缺失时自行 NoData。端点默认按需创建，避免无谓的 HttpClient。
         new(GachaRecordExportModule.Definition, context => new GachaRecordExportModule(context,
-            gachaRequest ?? new GameGachaRequest(), gachaEndpoint?.Invoke() ?? new HttpGachaRecordEndpoint(new HttpClient())))
+            gachaRequest ?? new GameGachaRequest(), gachaEndpoint?.Invoke() ?? HttpGachaRecordEndpoint.Shared))
     ]);
 
     internal static string[] Select(GameDataExportRequest request)

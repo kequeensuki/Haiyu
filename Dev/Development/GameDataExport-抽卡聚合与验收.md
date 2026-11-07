@@ -1,7 +1,7 @@
 # 抽卡记录：聚合、跨会话累积与验收
 
 抽卡记录独立落盘到 `<playerId>/gacha/record.json`，对同一 playerId **跨会话累积**。
-它不并入 `game-data.json`，也不来自 TCP 下行——数据由一次 HTTP 查询获得。
+它不并入 `game-data.json`。历史内容由 HTTP 查询获得，查询凭证仍需从游戏下行取得。
 
 协议依据、URL 拼装与网页取数取证见 `GameDataExport-抽卡记录导出调研与方案.md`。
 
@@ -10,17 +10,17 @@
 客户端 `GachaController.GachaHistoryRequest` 在本版本是空实现；"查看抽卡记录"直接打开 webview，
 页面再调用 `POST {cn|global}/gacha/record/query`。因此抽卡记录**无法**只靠抓包得到。
 
-本模块因此是全导出管线里唯一的主动请求模块：启动时执行一次查询，其余模块仍然只消费下行。
+本模块消费已验证会话的 `GachaInfoResponse`，在停止导出时统一进行 HTTP 查询。不同账号分别写入；同账号重登只采用最新登录代次的凭证。没有新凭证时不复用旧会话凭证。
 
 ## 2. 六个请求参数的来源
 
 | 参数 | 来源 |
 |---|---|
-| `playerId` | 抓包 `BasicInfoNotify`(15380) → 主程序填入 `GameGachaRequest` |
-| `recordId` | 抓包 `GachaInfoResponse.record_id`(field 15) |
+| `playerId` | 捕获层从 `BasicInfoNotify`(15380) 解析身份 → 会话通知/MessageObservation → 模块绑定 |
+| `recordId` | 模块消费 `GachaInfoResponse`(18695)，成功码 field 6 为 0 后读取 field 15 |
 | `cardPoolId` | 抓包 `GachaInfo.resources_id`(field 12)；接口不校验，可为空 |
 | `serverId` | 两个 pak 常量，由**接口探测**二选一（见 §3） |
-| `languageCode` | 主程序传入；实测错值会静默返回空列表 |
+| `languageCode` | 显式参数可指定；生产缺省 `zh-Hans`，尚未接入游戏语言来源，不从应用界面语言推断 |
 | `cardPoolType` | 官方页面常量 `GachaPoolTypes.All` |
 
 ### serverId 常量出处
@@ -70,7 +70,7 @@ exports.SERVER_ID_GLOBAL = "86d52186155b148b5c138ceb41be9650";
 ```
 
 - 命中缓存 → 不探测；
-- 缓存值导致 `-4`（换服/合服）→ 删除该条缓存，下次重新探测；
+- 缓存值导致 `-4` → 删除该条缓存，当次跳过缓存重新探测一次；若仍不匹配则失败，防止循环；
 - 缓存文件损坏 → 退化为空缓存（最坏多探测一次），不阻断导出。
 
 ## 4. languageCode 是有实际后果的参数
@@ -90,24 +90,25 @@ exports.SERVER_ID_GLOBAL = "86d52186155b148b5c138ceb41be9650";
 
 抽卡记录没有修改与删除：
 
-- `GachaRecordCollection` 只重写新增路径；`Update`/`Remove` 保留 `DataCollectionBase` 默认行为；
+- `GachaRecordCollection` 新增去重保留既有记录；`Update`/`Remove` 显式拒绝；
 - 适配器不存在全量替换入口，合并不可能因"本次结果为空"而清空本地；
 - **旧记录永不被删除**：官方只保留有限时间，过期后本地必须留存，这正是跨会话累积的意义。
 
 ### 合并键与 occurrence
 
 ```text
-cardPoolType, time, resourceId, qualityLevel, resourceType, name, count, occurrence
+cardPoolType, time, resourceId, qualityLevel, count, occurrence
 ```
 
-前 7 项与既有 `RecordHelper.AreItemsEqual` 一致。`occurrence` 是同一键在**单次响应内**的序号：
-一次十连可能同秒抽到两把同名三星武器，只按前 7 项会少计。
+名称、类型文字、池标签不参与持久身份，避免翻译改变而重复累积。`occurrence` 是前五项在**单次响应内**的序号，用于保留同秒同物品多次抽取。
+
+接口没有唯一事件 ID；该方法要求时间文本和数值字段保持稳定，无法区分窗口中恰好完全相同且数量不变的事件替换。读取旧 v1 文件时先验证原始结构/计数，再合并翻译副本的稳定身份；保持 schemaVersion=1 与外部 JSON 形状。
 
 因为 occurrence 由本次响应重新计算，重复拉取同一批数据得到相同键 → **天然幂等**，不产生新版本。
 
 ## 6. 损坏文件保护
 
-读取旧 `record.json` 失败（非法 JSON、schemaVersion 不符、IO 失败）时：
+读取旧 `record.json` 失败（非法 JSON、结构或必需字段损坏、账号错配、计数/时间范围不符、schemaVersion 不符、IO 失败）时：
 
 - **拒绝写入**并报错，保留旧文件；
 - 绝不用新数据覆盖，避免"读不到就当没有"抹掉历史。
@@ -140,7 +141,7 @@ cardPoolType, time, resourceId, qualityLevel, resourceType, name, count, occurre
 
 ## 8. 验收
 
-`ABIRuntime.TransportTests --game-data-export` 新增 4 项：
+原有抽卡测试：
 
 | 测试 | 覆盖 |
 |---|---|
@@ -150,7 +151,13 @@ cardPoolType, time, resourceId, qualityLevel, resourceType, name, count, occurre
 | `TestGachaWireParsingAsync` | 成功/空池/`-4`/`-1`/200 折叠/裸数字池文本 |
 | `TestGachaModuleWiringAsync` | 组合根注册/目录可选/缺参数不请求/真实落盘路径与标签 |
 
-全部使用可编程假端点，**不请求生产接口**。
+原有测试使用假端点。新增 `GachaRegression` 由托管测试与 NativeAOT smoke 共用，在 `HttpMessageHandler` 替换网络，保留实际 endpoint 和源生成请求序列化，**不请求生产接口**。
+
+六项新增回归：生产默认工厂/凭证/重登换号/ABI；全失败/部分失败/空池；结构损坏与历史保护；跨语言去重；缓存当次恢复；损坏 HTTP 响应。运行结果见 `GameDataExport-抽卡七项修复与验证.md`。
+
+所有池失败：Failed、不创建新空文件；部分池成功：只合并成功池，标记 Incomplete 与失败池；全部合法空池：Completed。模块 artifacts、捕获索引和顶层 Success 与这些状态一致。
+
+HTTP 请求使用类型化 DTO 和 JsonSerializerContext；响应成功时必须有合法 data 数组及完整条目。请求单次默认超时 15 秒，停止阶段所有账号共用 60 秒查询预算。历史写入使用共享 Snapshot/Flush/回执；缓存可重建，写失败不阻断已确认的账本。
 
 ## 9. 已知限制
 
