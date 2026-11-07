@@ -8,8 +8,8 @@
 |---|---|
 | `Capture` / `Rebuild` / `Decrypt` / `Session` | 捕获、传输恢复、密码和登录/玩家身份；不解释库存字段 |
 | `Protocol` | 只解码冻结的协议字段树；事件导出继续使用完整协议结果和原载荷 |
-| `Adapters/Inventory` / `Adapters/Mail` / `Adapters/Achievements` | 消息编号、字段编号、错误码、载荷形状及跨来源实例路由；转换为类型化变更 |
-| `Domains/Inventory` / `Domains/Mail` / `Domains/Achievements` | 无协议/ABI 依赖的不可变状态、业务变更和集合；武器装备、声骸养成和拆合堆规则 |
+| `Adapters/Inventory` / `Adapters/Mail` / `Adapters/Achievements` / `Adapters/Roles` | 消息编号、字段编号、错误码、载荷形状及跨来源实例路由；转换为类型化变更 |
+| `Domains/Inventory` / `Domains/Mail` / `Domains/Achievements` / `Domains/Roles` | 无协议/ABI 依赖的不可变状态、业务变更和集合；武器装备、声骸养成和拆合堆规则 |
 | `Aggregation/Contracts` | `IDataCollection` 增删改契约与 `ChangeResult`，区分变化、无变化、目标缺失和非法操作 |
 | `Aggregation/Collections` | 可覆盖的默认增删改、冻结快照、共享批事务；只持有事务工作集合，不持有来源同步或落盘版本 |
 | `Aggregation/SourceState.cs` | 每个会话/来源的基线、接收顺序、来源版本、失同步和恢复的唯一管理者 |
@@ -39,11 +39,11 @@
 
 1. 在 `Domains/<业务域>/<类型>` 定义不可变状态、明确的变更类型及集合；优先复用默认行为。
 2. 在对应 `Adapters` 中声明消息编号、成功条件和字段转换，避免在集合中出现协议字段编号。
-3. 在组合根注册适配器；同一编号重复注册会失败。为新增快照来源在输出映射中明确增加 DTO 字段，而非隐式反射序列化。
+3. 在组合根注册适配器；同一消息可投递给不同来源，同一消息重复注册同一来源会失败。为新增快照来源在输出映射中明确增加 DTO 字段，而非隐式反射序列化。
 4. 保留 `SourceState` / `AggregateState` 的同步和版本所有权，不在新集合中重复维护。
-5. 添加领域边界测试和实际消息到文件的链路测试。未知目标必须等待全量基线，不能靠猜测补造对象。
+5. 添加领域边界测试和实际消息到文件的链路测试。未知目标要按协议区分查询数据、实体初始化先行和硬失同步；不能靠猜测补造完整对象，也不能拒绝后到的合法初始化完成消息。
 
-换皮肤和批量标记的成功下行响应仍缺少目标及新值，维持 `AwaitingBaseline`，完整响应才恢复；没有新增客户端请求捕获或主动请求。目录、JSON 字段、MemoryPack ABI 和 JSONL 事件格式保持兼容。
+换皮肤和批量标记的成功下行响应仍缺少目标及新值，维持 `AwaitingBaseline`，完整响应才恢复；没有新增客户端请求捕获或主动请求。稳定模块 ID 与既有 JSON 字段默认保留；新增业务 DTO 时需配套构建主程序与 ABI，不承诺与任意旧 MemoryPack 端点混用。JSONL 仍记录原始事件事实。
 
 ## 验证
 
@@ -64,3 +64,5 @@
 角色导出采用 `Domains/Roles` / `Adapters/Roles`，账号角色与声骸装备独立建立基线。导出映射按声骸实例 ID 联结现有背包，确保装备详情跟随升级、调谐和换装。`roles.items` 包含技能实际等级、技能节点、服务器属性与五槽声骸；属性保持协议整数单位。详细协议依据、缺失数据状态及验收见 `Dev/Development/GameDataExport-角色聚合与验收.md`。同一下行消息可分派给不同来源，重复注册同一来源仍会拒绝。
 
 集合可以声明实体初始化未完成，冻结快照通过 `IsComplete` 携带完成状态。聚合器在 `AwaitingEntities` 期间保留上次完整文件，并继续接收有序消息；完整实体到齐后恢复。该状态与 SourceState 的硬失同步分开，后者仍必须通过完整基线恢复。
+
+新增数据导出的完整操作指南、任务工作表和验证脚本见 [haiyu-game-data-export skill](../../../../../.agents/skills/haiyu-game-data-export/SKILL.md)。
