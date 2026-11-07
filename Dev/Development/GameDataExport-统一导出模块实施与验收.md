@@ -14,9 +14,9 @@
 | 模块契约 | `Modules/ExportContracts` 定义描述、订阅、会话通知、检查点、进度、完成和释放 |
 | 组合根 | `Modules/BuiltInExportModules` 注册模块并兼容旧 Scope 请求；这里是默认选择策略的唯一业务入口 |
 | 调度 | `Modules/ExportCoordinator` 按订阅分发，调度检查点和输出，统一汇总所有启用模块的结果 |
-| 聚合 | `Aggregation/SourceState` 提供来源基线、分页、受限有序增量、完整性、新鲜度、一致性、不可变候选和回执确认 |
+| 聚合 | `Aggregation/SourceState` 管理来源基线、分页、有序增量、失同步和新鲜度；`AggregateState` 管理多来源一致性、不可变候选和回执确认 |
 | 输出 | `Storage/JsonExportStore` 共享有界队列、总正文预算、路径/目标冲突检查、原子覆盖和串行回执；`JsonLinesArtifactWriter` 提供追加/分片/句柄上限 |
-| 背包模块 | `Modules/InventoryExportModule` 从共享字段模型映射 DTO，不进行第二次 protobuf 解析；按登录会话聚合，成功写入后按玩家累计次数 |
+| 背包模块 | `Modules/InventoryExportModule` 调度消息适配器与类型化业务快照，不解释库存字段；`Export/InventorySnapshotMapper` 映射 DTO，成功写入后按玩家累计次数 |
 | 消息模块 | `Modules/ServerMessagesExportModule` 使用同一个生命周期。`Events/EventExportSession` 只保留事件格式、玩家归属和统计，复用共享队列及文件写入器 |
 | 兼容 | 旧 Inventory、PlayerSummaries、EventExport 字段由模块实现的 `ILegacyExportProjection` 投影。旧写入测试钩子隔离在 `GameDataExportService.Composition`，回放默认使用临时输出根，不写入用户 Documents 或仓库目录 |
 
@@ -146,3 +146,5 @@ Get-FileHash '.\src\Extensions\Haiyu.ABI\bin\win-x64\publish\Haiyu.ABI.dll', $de
 `capture-index.json` 的背包产物路径指向这份最新文件；旧捕获索引中的该路径不是历史版本承诺，其 revision / sources 描述当次捕获结束时的状态。旧版本已生成的索引保留原样，不回写历史文件。
 
 回归覆盖跨捕获日期更新、基线未齐保留旧数据、旧时间戳清理、其他玩家与无关文件隔离，以及新索引中的固定路径。
+
+对象集合、协议适配及新增数据类型的流程见 [游戏数据导出结构](../../src/Extensions/Haiyu.ABI/Services/GameDataExport/README.md)。

@@ -23,6 +23,9 @@ internal static partial class Program
         ABIMemoryPack.EnsureFormatters();
         var tests = new (string Name, Func<Task> Run)[]
         {
+            ("集合契约：默认增删改/快照冻结/失败与异常回滚", TestDataCollectionContractAsync),
+            ("业务集合：覆盖新增/部分更新/跨对象装备/结构相等", TestDomainCollectionOverridesAsync),
+            ("适配器扩展：独立数据类型/注册冲突/冻结快照", TestInventoryAdapterExtensionAsync),
             ("武器变更链：养成/装备/增删改/失同步恢复", TestWeaponMutationChainAsync),
             ("声骸变更链：拆合堆/标记/失同步/全量恢复", TestMutationDesyncRecoveryAsync),
             ("道具通知：绝对数量/实例键/增删改/幂等", TestInventoryNotificationsAsync),
@@ -72,7 +75,7 @@ internal static partial class Program
         };
 
         if (args.Contains("--game-data-export"))
-            tests = tests.Where(t => t.Run == TestConfirmedResumeNotificationAsync || t.Run == TestFilteredMessageModulesAsync || t.Run == TestModuleCompletionStatesAsync || t.Run == TestInventoryPendingVersionAsync || t.Run == TestAggregateSourcesAsync || t.Run == TestAggregatePagesAndDeltasAsync || t.Run == TestSharedOutputFencingAsync || t.Run == TestExportModuleRegistryAsync || t.Run == TestInventoryModuleIsolationAsync || t.Run == TestExportConsumerBoundariesAsync || t.Run == TestLoginIsolationAsync || t.Run == TestFrameValidationAsync
+            tests = tests.Where(t => t.Run == TestDataCollectionContractAsync || t.Run == TestDomainCollectionOverridesAsync || t.Run == TestInventoryAdapterExtensionAsync || t.Run == TestConfirmedResumeNotificationAsync || t.Run == TestFilteredMessageModulesAsync || t.Run == TestModuleCompletionStatesAsync || t.Run == TestInventoryPendingVersionAsync || t.Run == TestAggregateSourcesAsync || t.Run == TestAggregatePagesAndDeltasAsync || t.Run == TestSharedOutputFencingAsync || t.Run == TestExportModuleRegistryAsync || t.Run == TestInventoryModuleIsolationAsync || t.Run == TestExportConsumerBoundariesAsync || t.Run == TestLoginIsolationAsync || t.Run == TestFrameValidationAsync
                 || t.Run == TestParallelDecryptionAsync || t.Run == TestExportResultIsolationAsync
                 || t.Run == TestConnectionEndpointIsolationAsync || t.Run == TestSlowExportDrainAsync || t.Run == TestFullProtocolAsync || t.Run == TestEventFilesAsync || t.Run == TestKcpStreamWatermarkAsync
                 || t.Run == TestInventoryCaptureAsync || t.Run == TestPlayerIdResolverAsync

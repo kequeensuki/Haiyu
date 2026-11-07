@@ -1,8 +1,8 @@
 using ABI.Models;
-using Haiyu.ABI.Protocol;
+using Haiyu.ABI.Services.GameDataExport.Adapters.Inventory;
+using Haiyu.ABI.Services.GameDataExport.Domains.Inventory;
 using Haiyu.ABI.Services.GameDataExport.Aggregation;
 using Haiyu.ABI.Services.GameDataExport.Export;
-using Haiyu.ABI.Services.GameDataExport.Protocol;
 using Haiyu.ABI.Services.GameDataExport.Session;
 using Haiyu.ABI.Services.GameDataExport.Storage;
 
@@ -13,19 +13,12 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
     Func<GameDataExportResult, DateTimeOffset, string?>? legacyWrite = null) : IGameDataExportModule, ILegacyExportProjection
 {
     internal static readonly GameDataExportModuleDescriptor Definition = new("inventory", "Toolkit_GameDataExportInventory", "背包快照", true, true);
-    private static readonly Dictionary<ushort, string> Sources = new()
-    {
-        [WavesMessageIds.NormalItemResponse] = "normalItems",
-        [WavesMessageIds.WeaponItemResponse] = "weapons",
-        [WavesMessageIds.PhantomItemResponse] = "phantoms",
-        [WavesMessageIds.ValidTimeItemResponse] = "validTimeItems",
-    };
     private sealed class State(string session, int player, TimeProvider clock)
     {
         internal int Player = player;
-        internal readonly AggregateState<ProtocolMessage> Aggregate = new(session, Sources.Values.Select(id => new SourceDefinition(id)),
-            m => m.Fields.Values.OfType<IReadOnlyList<object>>().Sum(list => list.Count), clock: clock);
-        internal AggregateSnapshot<ProtocolMessage>? Candidate;
+        internal readonly AggregateState<InventorySnapshot> Aggregate = new(session, InventoryMessageRegistry.Default.Sources.Select(id => new SourceDefinition(id)),
+            snapshot => snapshot.Count, clock: clock);
+        internal AggregateSnapshot<InventorySnapshot>? Candidate;
         internal bool Pending;
         internal bool Superseded;
         internal long? LastAttempt;
@@ -43,61 +36,46 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
     private GameDataExportResult? _last;
     private GameDataExportModuleState? _ended;
     public GameDataExportModuleDescriptor Descriptor => Definition;
-    public IReadOnlySet<ushort> MessageIds { get; } = InventoryMessageProjection.Rules.Keys.ToHashSet();
+    public IReadOnlySet<ushort> MessageIds { get; } = InventoryMessageRegistry.Default.Handlers.Keys.ToHashSet();
 
     public void Consume(MessageObservation message)
     {
         if (!message.IsCurrentSession || !message.ConnectionVerified || message.SessionId.StartsWith("unverified-", StringComparison.Ordinal)) return;
         var state = Get(message.SessionId, message.PlayerId ?? 0);
         _current = state;
-        var rule = InventoryMessageProjection.Rules[message.Frame.MsgId];
-        var rules = rule.Operation == InventoryMessageProjection.Operation.FuncValue
-            ? new[] { rule, rule with { Source = "weapons", ListField = 6 } } : new[] { rule };
+        var handler = InventoryMessageRegistry.Default.Handlers[message.Frame.MsgId];
         _progressRevision++;
         if (message.Status is not null || message.Protocol?.Message is not { } model
             || !message.Protocol.DecodeStatus.StartsWith("decoded", StringComparison.Ordinal))
         {
-            foreach (var affected in rules) state.Aggregate.Source(affected.Source).Reject("inventory_decode_failed", true);
+            foreach (var sourceId in handler.Sources) state.Aggregate.Source(sourceId).Reject("inventory_decode_failed", true);
             state.Error = "背包消息解密或 protobuf 解析失败，保留上次文件。";
             return;
         }
         state.Decoded++;
-        if (rule.ErrorField != 0 && model.Int32(rule.ErrorField) != 0) return;
-        if (rule.Operation == InventoryMessageProjection.Operation.FuncValue)
-        {
-            // 该通知没有道具类型；只更新已确认归属的实例，不能猜测缺失对象的来源。
-            var matched = rules.Where(r => state.Aggregate.Source(r.Source).Value?.Messages(r.ListField)
-                .Any(item => item.Int32(2) == model.Int32(1)) == true).ToArray();
-            if (matched.Length != 1)
-            {
-                foreach (var affected in rules) state.Aggregate.Source(affected.Source).Reject("item_identity_unresolved", true);
-                state.Error = "道具标记通知无法唯一定位实例，等待完整背包基线。";
-                return;
-            }
-            rules = matched;
-        }
+        var changes = handler.Decode(model, sourceId => state.Aggregate.Source(sourceId).Value);
         var provenance = new SourceProvenance(message.EventIndex, message.EventIndex,
             message.ReceivedAt ?? context.Clock.GetUtcNow(), message.ConnectionId);
-        foreach (var affected in rules)
+        foreach (var change in changes)
         {
-            var source = state.Aggregate.Source(affected.Source);
-            ProtocolMessage Budget(ProtocolMessage value)
+            var source = state.Aggregate.Source(change.SourceId);
+            InventorySnapshot Budget(InventorySnapshot value)
             {
-                var size = InventoryMessageProjection.RetainedBytes(value);
-                var total = _states.Values.Sum(s => s.Sizes.Values.Sum()) - state.Sizes.GetValueOrDefault(affected.Source) + size;
+                var total = _states.Values.Sum(s => s.Sizes.Values.Sum())
+                    - state.Sizes.GetValueOrDefault(change.SourceId) + value.RetainedBytes;
                 if (total > 32 * 1024 * 1024) throw new IOException("背包聚合状态超过内存预算。");
                 return value;
             }
-            if (affected.Operation == InventoryMessageProjection.Operation.Full)
+            if (change.Full is { } readFull)
             {
-                try { source.Full(Budget(InventoryMessageProjection.Full(affected, model)), provenance: provenance); }
+                try { source.Full(Budget(readFull()), provenance: provenance); }
                 catch (InvalidDataException) { source.Reject("invalid_inventory_baseline", true); }
             }
-            else if (affected.Operation == InventoryMessageProjection.Operation.Invalidate)
-                source.Reject("mutation_requires_request_context", true);
-            else
-                source.ApplyOrdered(baseline => Budget(InventoryMessageProjection.Apply(affected, baseline, model)), provenance);
-            if (source.Value is { } retained) state.Sizes[affected.Source] = InventoryMessageProjection.RetainedBytes(retained);
+            else if (change.Error is { } error)
+                source.Reject(error, true);
+            else if (change.Apply is { } apply)
+                source.ApplyOrdered(baseline => Budget(apply(baseline)), provenance);
+            if (source.Value is { } retained) state.Sizes[change.SourceId] = retained.RetainedBytes;
         }
         state.Error = state.Aggregate.Progress().FirstOrDefault(source => source.Error is not null)?.Error;
     }
@@ -144,7 +122,7 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
                 && context.Clock.GetElapsedTime(lastAttempt) < TimeSpan.FromSeconds(1))) continue;
             state.Candidate ??= state.Aggregate.Build();
             if (state.Candidate is not { } snapshot) continue;
-            var data = Map(snapshot.Values);
+            var data = InventorySnapshotMapper.Map(snapshot.Values);
             var count = _players.GetValueOrDefault(state.Player)?.UpdateCount + 1 ?? 1;
             var result = new GameDataExportResult(true, "背包快照已更新。", data, null,
                 context.CapturedFrames, state.Decoded, context.LegacyKey(snapshot.Epoch), state.Player, count);
@@ -164,7 +142,7 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
             }
         }
     }
-    private void Acknowledge(State state, AggregateSnapshot<ProtocolMessage> snapshot, GameDataExportResult result, OutputReceipt receipt)
+    private void Acknowledge(State state, AggregateSnapshot<InventorySnapshot> snapshot, GameDataExportResult result, OutputReceipt receipt)
     {
         state.Pending = false;
         _progressRevision++;
@@ -234,37 +212,4 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
     }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
-    private static GameInventoryData Map(IReadOnlyDictionary<string, ProtocolMessage> values) => new(
-        Array.AsReadOnly(values["normalItems"].Messages(3).Select(item => new GameNormalItem(
-            item.Int32(1), item.Int32(2), item.Int64(4))).ToArray()),
-        Array.AsReadOnly(values["weapons"].Messages(6).Select(item => new GameWeaponItem(
-            item.Int32(1),
-            item.Int32(2),
-            item.Int32(4),
-            item.Int32(5),
-            item.Int32(6),
-            item.Int32(7),
-            item.Int32(8)
-        )).ToArray()),
-        Array.AsReadOnly(values["phantoms"].Messages(3).Select(item => new GamePhantomItem(
-            item.Int32(1),
-            item.Int32(2),
-            item.Int32(4),
-            item.Int32(5),
-            Props(item, 6),
-            Props(item, 7),
-            item.Int32(8),
-            item.Int32(9),
-            item.Int32(12),
-            Props(item, 10),
-            item.Int32s(11),
-            item.Int64(13),
-            item.Int32(3)
-        )).ToArray()),
-        Array.AsReadOnly(values["validTimeItems"].Messages(14).Select(item => new GameValidTimeItem(
-            item.Int32(1), item.Int32(2), item.Int32(3), item.Int64(4))).ToArray())
-    );
-
-    private static IReadOnlyList<GamePhantomProp> Props(ProtocolMessage message, int field) =>
-        Array.AsReadOnly(message.Messages(field).Select(item => new GamePhantomProp(item.Int32(1), item.Int32(2))).ToArray());
 }

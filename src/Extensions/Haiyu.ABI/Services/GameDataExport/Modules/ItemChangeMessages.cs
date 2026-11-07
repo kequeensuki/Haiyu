@@ -1,4 +1,5 @@
 using ABI.Models;
+using Haiyu.ABI.Services.GameDataExport.Adapters.Inventory;
 using Haiyu.ABI.Protocol;
 
 namespace Haiyu.ABI.Services.GameDataExport.Modules;
@@ -9,7 +10,7 @@ internal static class ItemChangeMessages
     internal static readonly GameDataExportModuleDescriptor Definition = new(
         "item-changes", "Toolkit_GameDataExportItemChanges", "道具与角色变更事件", false, false);
 
-    internal static readonly IReadOnlySet<ushort> MessageIds = InventoryMessageProjection.Rules.Keys.Concat(new ushort[]
+    internal static readonly IReadOnlySet<ushort> MessageIds = InventoryMessageRegistry.Default.Handlers.Keys.Concat(new ushort[]
     {
         WavesMessageIds.PushDataCompleteNotify,
         WavesMessageIds.PbGetRoleListNotify,

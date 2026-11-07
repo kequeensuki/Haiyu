@@ -37,7 +37,7 @@ StackSplitInfo 的 OperateItem 走库存更新；RemainderItem 走新增库存�
 
 ## 顺序、隔离与输出
 
-- `InventoryMessageProjection` 只负责解释消息与实例键；`InventoryExportModule` 负责会话状态、大小预算和快照调度。
+- `Adapters/Inventory` 负责协议字段和实例路由，`Domains/Inventory` 的业务集合复用默认增删改并覆盖特殊规则；`InventoryExportModule` 只负责会话状态、大小预算和快照调度。旧 `InventoryMessageProjection` 已删除。
 - 通用 `SourceState.ApplyOrdered` 要求已有可用基线和来源消息索引。事件索引由已有串行协调器产生，只维护本地版本，不将其冒充服务器业务版本。重复/倒序索引不应用，不改变已有的带服务器版本 Delta API。
 - 基线前的增量不会组成完整快照，也不排队重放。后来的全量可能已经包含这些变更，盲目重放会覆盖更近状态；完整原始事件可通过事件模块保留。
 - 新登录仍建立独立来源状态；旧连接、未验证连接和非当前登录消息不能修改当前背包；沿用 playerId 路径和写入所有权隔离。
@@ -99,3 +99,5 @@ StackSplitInfo 的 OperateItem 走库存更新；RemainderItem 走新增库存�
 该检测能发现部分数据不一致，不保证发现所有网络漏收；当前没有服务器业务版本向量，不声称严格服务器事务一致性。
 
 回归用例位于 `InventoryMutationChainTests.cs`，覆盖武器新增→养成/装备→删除→重新新增、重复和失败响应、修改目标缺失、禁止增量自愈、全量恢复；声骸拆合堆、重塑、标记、删除/重新新增、无上下文成功响应、批内非法对象不部分提交，以及普通/限时道具缺失目标的失同步检测。仍需 Windows 实机捕获验证真实消息组合。
+
+当前目录和扩展方式见 [游戏数据导出结构](../../src/Extensions/Haiyu.ABI/Services/GameDataExport/README.md)。

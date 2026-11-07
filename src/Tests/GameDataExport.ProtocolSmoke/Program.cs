@@ -65,13 +65,24 @@ try
     capture.ConsumeRaw(Frame(WavesMessageIds.WeaponItemResponse, []));
     capture.ConsumeRaw(Frame(WavesMessageIds.PhantomItemResponse, []));
     capture.ConsumeRaw(Frame(WavesMessageIds.ValidTimeItemResponse, []));
+    capture.ConsumeRaw(Frame(WavesMessageIds.WeaponItemAddNotify,
+        new WeaponItemAddNotify { WeaponItemList = { new WeaponItem { Id = 10, IncrId = 101, WeaponLevel = 1 } } }.ToByteArray()));
+    capture.ConsumeRaw(Frame(WavesMessageIds.WeaponLevelUpResponse,
+        new WeaponLevelUpResponse { IncId = 101, WeaponLevel = 40, WeaponExp = 123 }.ToByteArray()));
+    capture.ConsumeRaw(Frame(WavesMessageIds.PhantomItemAddNotify,
+        new PhantomItemAddNotify { PhantomItemList = { new PhantomItem { Id = 30, IncrId = 301, StackCount = 3, AddTime = 42 } } }.ToByteArray()));
+    capture.ConsumeRaw(Frame(WavesMessageIds.PhantomIdentifyResponse,
+        new PhantomIdentifyResponse { UpdateInfo = new PhantomItem { Id = 30, IncrId = 301, PhantomLevel = 10 } }.ToByteArray()));
     context.RememberLegacyMetadata(capture.Session);
     var modules = await coordinator.FinishAsync(new(null, false));
     var result = coordinator.LegacyResult(modules);
     var wire = MemoryPackSerializer.Serialize(result, ABIMemoryPack.Options);
     var round = MemoryPackSerializer.Deserialize<GameDataExportResult>(wire, ABIMemoryPack.Options)!;
-    if (!round.Success || round.Modules?.Length != 3 || round.EventExport?.Written != 6
-        || round.Inventory?.NormalItems.Single().Count != 2 || !File.Exists(round.CaptureIndexPath)
+    if (!round.Success || round.Modules?.Length != 3 || round.EventExport?.Written != 10
+        || round.Inventory?.NormalItems.Single().Count != 2
+        || round.Inventory.Weapons.Single().WeaponLevel != 40 || round.Inventory.Weapons.Single().WeaponExp != 123
+        || round.Inventory.Phantoms.Single().PhantomLevel != 10 || round.Inventory.Phantoms.Single().StackCount != 3
+        || round.Inventory.Phantoms.Single().AddTime != 42 || !File.Exists(round.CaptureIndexPath)
         || !File.Exists(round.OutputJsonPath)) throw new Exception("module lifecycle or AOT ABI serialization failed");
     Console.WriteLine($"PASS NativeAOT protocol smoke: messages={catalog.Messages.Count}, registered={catalog.Ids.Count}, elapsedMs={watch.ElapsedMilliseconds}, managedBytes={GC.GetTotalMemory(true)}");
 }
