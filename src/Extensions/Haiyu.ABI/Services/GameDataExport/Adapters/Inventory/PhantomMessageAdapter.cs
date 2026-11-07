@@ -5,7 +5,7 @@ using Haiyu.ABI.Services.GameDataExport.Protocol;
 
 namespace Haiyu.ABI.Services.GameDataExport.Adapters.Inventory;
 
-internal sealed class PhantomMessageAdapter : InventoryMessageAdapter<int, PhantomState, PhantomChange>
+internal sealed class PhantomMessageAdapter : CollectionMessageAdapter<int, PhantomState, PhantomChange>
 {
     internal PhantomMessageAdapter() : base("phantoms", items => new PhantomCollection(items), item =>
         768 + 48L * (item.MainProps.Count + item.SubProps.Count + item.UnacknowledgedProps.Count) + 8L * item.LockedProps.Count)
@@ -35,7 +35,7 @@ internal sealed class PhantomMessageAdapter : InventoryMessageAdapter<int, Phant
         Invalidate(WavesMessageIds.PhantomSkinChangeResponse, 15);
         Invalidate(WavesMessageIds.PhantomBatchOperResponse, 13);
     }
-    internal InventoryMessageChange FunctionChange(ProtocolMessage message) =>
+    internal CollectionMessageChange FunctionChange(ProtocolMessage message) =>
         Delta(message, (m, c) => c.Update(m.Int32(1), new PhantomFunctionChanged(m.Int32(14))));
     private static ChangeResult Inventory(IDataCollection<int, PhantomState, PhantomChange> items, ProtocolMessage message)
     {

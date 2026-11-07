@@ -16,7 +16,7 @@
 | 调度 | `Modules/ExportCoordinator` 按订阅分发，调度检查点和输出，统一汇总所有启用模块的结果 |
 | 聚合 | `Aggregation/SourceState` 管理来源基线、分页、有序增量、失同步和新鲜度；`AggregateState` 管理多来源一致性、不可变候选和回执确认 |
 | 输出 | `Storage/JsonExportStore` 共享有界队列、总正文预算、路径/目标冲突检查、原子覆盖和串行回执；`JsonLinesArtifactWriter` 提供追加/分片/句柄上限 |
-| 背包模块 | `Modules/InventoryExportModule` 调度消息适配器与类型化业务快照，不解释库存字段；`Export/InventorySnapshotMapper` 映射 DTO，成功写入后按玩家累计次数 |
+| 背包模块 | `Modules/InventoryExportModule` 调度消息适配器与类型化业务快照，不解释库存字段；`Export/PlayerDataSnapshotMapper` 映射 DTO，成功写入后按玩家累计次数 |
 | 消息模块 | `Modules/ServerMessagesExportModule` 使用同一个生命周期。`Events/EventExportSession` 只保留事件格式、玩家归属和统计，复用共享队列及文件写入器 |
 | 兼容 | 旧 Inventory、PlayerSummaries、EventExport 字段由模块实现的 `ILegacyExportProjection` 投影。旧写入测试钩子隔离在 `GameDataExportService.Composition`，回放默认使用临时输出根，不写入用户 Documents 或仓库目录 |
 

@@ -1,6 +1,6 @@
 using ABI.Models;
-using Haiyu.ABI.Services.GameDataExport.Adapters.Inventory;
-using Haiyu.ABI.Services.GameDataExport.Domains.Inventory;
+using Haiyu.ABI.Services.GameDataExport.Adapters;
+using Haiyu.ABI.Services.GameDataExport.Aggregation.Collections;
 using Haiyu.ABI.Services.GameDataExport.Aggregation;
 using Haiyu.ABI.Services.GameDataExport.Export;
 using Haiyu.ABI.Services.GameDataExport.Session;
@@ -12,13 +12,13 @@ namespace Haiyu.ABI.Services.GameDataExport.Modules;
 internal sealed class InventoryExportModule(ExportCaptureContext context,
     Func<GameDataExportResult, DateTimeOffset, string?>? legacyWrite = null) : IGameDataExportModule, ILegacyExportProjection
 {
-    internal static readonly GameDataExportModuleDescriptor Definition = new("inventory", "Toolkit_GameDataExportInventory", "背包快照", true, true);
+    internal static readonly GameDataExportModuleDescriptor Definition = new("inventory", "Toolkit_GameDataExportInventory", "玩家数据快照（背包、邮件、成就、角色）", true, true);
     private sealed class State(string session, int player, TimeProvider clock)
     {
         internal int Player = player;
-        internal readonly AggregateState<InventorySnapshot> Aggregate = new(session, InventoryMessageRegistry.Default.Sources.Select(id => new SourceDefinition(id)),
+        internal readonly AggregateState<CollectionSnapshot> Aggregate = new(session, PlayerDataMessageRegistry.Default.Sources.Select(id => new SourceDefinition(id, PlayerDataMessageRegistry.Default.OptionalSources.Contains(id) ? SourceRequirement.Optional : SourceRequirement.Required)),
             snapshot => snapshot.Count, clock: clock);
-        internal AggregateSnapshot<InventorySnapshot>? Candidate;
+        internal AggregateSnapshot<CollectionSnapshot>? Candidate;
         internal bool Pending;
         internal bool Superseded;
         internal long? LastAttempt;
@@ -28,6 +28,9 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
     }
     private readonly Dictionary<string, State> _states = new(StringComparer.Ordinal);
     private readonly Dictionary<int, GameDataExportPlayerSummary> _players = new();
+    private readonly Dictionary<int, int> _mailCounts = new();
+    private readonly Dictionary<int, int> _achievementCounts = new();
+    private readonly Dictionary<int, int> _roleCounts = new();
     private readonly Dictionary<string, GameDataExportArtifact> _artifacts = new(StringComparer.Ordinal);
     private State? _current;
     private long _progressRevision;
@@ -36,20 +39,25 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
     private GameDataExportResult? _last;
     private GameDataExportModuleState? _ended;
     public GameDataExportModuleDescriptor Descriptor => Definition;
-    public IReadOnlySet<ushort> MessageIds { get; } = InventoryMessageRegistry.Default.Handlers.Keys.ToHashSet();
+    public IReadOnlySet<ushort> MessageIds { get; } = PlayerDataMessageRegistry.Default.Handlers.Keys.ToHashSet();
 
     public void Consume(MessageObservation message)
     {
         if (!message.IsCurrentSession || !message.ConnectionVerified || message.SessionId.StartsWith("unverified-", StringComparison.Ordinal)) return;
         var state = Get(message.SessionId, message.PlayerId ?? 0);
         _current = state;
-        var handler = InventoryMessageRegistry.Default.Handlers[message.Frame.MsgId];
+        var handler = PlayerDataMessageRegistry.Default.Handlers[message.Frame.MsgId];
         _progressRevision++;
         if (message.Status is not null || message.Protocol?.Message is not { } model
             || !message.Protocol.DecodeStatus.StartsWith("decoded", StringComparison.Ordinal))
         {
-            foreach (var sourceId in handler.Sources) state.Aggregate.Source(sourceId).Reject("inventory_decode_failed", true);
-            state.Error = "背包消息解密或 protobuf 解析失败，保留上次文件。";
+            foreach (var sourceId in handler.Sources)
+            {
+                var source = state.Aggregate.Source(sourceId);
+                source.Requirement = SourceRequirement.Required;
+                source.Reject("inventory_decode_failed", true);
+            }
+            state.Error = "游戏数据消息解密或 protobuf 解析失败，保留上次文件。";
             return;
         }
         state.Decoded++;
@@ -59,7 +67,8 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
         foreach (var change in changes)
         {
             var source = state.Aggregate.Source(change.SourceId);
-            InventorySnapshot Budget(InventorySnapshot value)
+            source.Requirement = SourceRequirement.Required;
+            CollectionSnapshot Budget(CollectionSnapshot value)
             {
                 var total = _states.Values.Sum(s => s.Sizes.Values.Sum())
                     - state.Sizes.GetValueOrDefault(change.SourceId) + value.RetainedBytes;
@@ -122,10 +131,13 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
                 && context.Clock.GetElapsedTime(lastAttempt) < TimeSpan.FromSeconds(1))) continue;
             state.Candidate ??= state.Aggregate.Build();
             if (state.Candidate is not { } snapshot) continue;
-            var data = InventorySnapshotMapper.Map(snapshot.Values);
+            var data = PlayerDataSnapshotMapper.Map(snapshot.Values);
             var count = _players.GetValueOrDefault(state.Player)?.UpdateCount + 1 ?? 1;
-            var result = new GameDataExportResult(true, "背包快照已更新。", data, null,
-                context.CapturedFrames, state.Decoded, context.LegacyKey(snapshot.Epoch), state.Player, count);
+            var result = new GameDataExportResult(true, "玩家数据快照已更新。", data, null,
+                context.CapturedFrames, state.Decoded, context.LegacyKey(snapshot.Epoch), state.Player, count,
+                Mails: PlayerDataSnapshotMapper.MapMails(snapshot.Values),
+                Achievements: PlayerDataSnapshotMapper.MapAchievements(snapshot.Values),
+                Roles: PlayerDataSnapshotMapper.MapRoles(snapshot.Values));
             var bytes = InventoryJsonWriter.Encode(result, context.StartedAt);
             state.Pending = true;
             state.LastAttempt = context.Clock.GetTimestamp();
@@ -142,7 +154,7 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
             }
         }
     }
-    private void Acknowledge(State state, AggregateSnapshot<InventorySnapshot> snapshot, GameDataExportResult result, OutputReceipt receipt)
+    private void Acknowledge(State state, AggregateSnapshot<CollectionSnapshot> snapshot, GameDataExportResult result, OutputReceipt receipt)
     {
         state.Pending = false;
         _progressRevision++;
@@ -154,6 +166,12 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
         state.Error = state.Aggregate.Progress().FirstOrDefault(source => source.Error is not null)?.Error;
         result = result with { UpdateCount = (_players.GetValueOrDefault(state.Player)?.UpdateCount ?? 0) + 1 };
         _last = result with { OutputJsonPath = receipt.Path };
+        if (result.Mails is { } mails) _mailCounts[state.Player] = mails.Items.Count;
+        else _mailCounts.Remove(state.Player);
+        if (result.Achievements is { } achievements) _achievementCounts[state.Player] = achievements.Items.Count;
+        else _achievementCounts.Remove(state.Player);
+        if (result.Roles is { } roles) _roleCounts[state.Player] = roles.Items.Count;
+        else _roleCounts.Remove(state.Player);
         var data = result.Inventory!;
         _players[state.Player] = new(state.Player, result.UpdateCount, data.NormalItems.Count, data.Weapons.Count,
             data.Phantoms.Count, data.ValidTimeItems.Count, receipt.Path!);
@@ -173,7 +191,9 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
                 new("weapons", player.WeaponCount, player.PlayerId),
                 new("phantoms", player.PhantomCount, player.PlayerId),
                 new("validTimeItems", player.ValidTimeItemCount, player.PlayerId),
-            })).ToArray(),
+            })).Concat(_mailCounts.Select(pair => new GameDataExportCounter("mails", pair.Value, pair.Key)))
+            .Concat(_achievementCounts.Select(pair => new GameDataExportCounter("achievements", pair.Value, pair.Key)))
+            .Concat(_roleCounts.Select(pair => new GameDataExportCounter("roles", pair.Value, pair.Key))).ToArray(),
         _states.SelectMany(pair => pair.Value.Aggregate.Progress().Select(source => source with
         { SessionId = pair.Key, PlayerId = pair.Value.Player > 0 ? pair.Value.Player : null })).ToArray(), _artifacts.Values.ToArray());
     public async ValueTask<GameDataExportModuleResult> CompleteAsync(ExportStopContext stop)
@@ -193,7 +213,7 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
     }
     public GameDataExportResult ProjectResult(GameDataExportResult result) => result with
     {
-        Inventory = _last?.Inventory, OutputJsonPath = _last?.OutputJsonPath, PlayerId = _last?.PlayerId ?? 0,
+        Inventory = _last?.Inventory, Mails = _last?.Mails, Achievements = _last?.Achievements, Roles = _last?.Roles, OutputJsonPath = _last?.OutputJsonPath, PlayerId = _last?.PlayerId ?? 0,
         UpdateCount = _last?.UpdateCount ?? 0, SessionKeyHex = _last?.SessionKeyHex,
         DecodedFrames = _states.Values.Sum(s => s.Decoded), PlayerSummaries = _players.Values.OrderBy(p => p.PlayerId).ToArray()
     };

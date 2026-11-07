@@ -96,7 +96,10 @@ public sealed partial record GameDataExportResult(
     [property: JsonPropertyName("playerSummaries")] GameDataExportPlayerSummary[]? PlayerSummaries = null,
     [property: JsonPropertyName("eventExport")] GameDataExportEventStats? EventExport = null,
     [property: JsonPropertyName("modules")] GameDataExportModuleResult[]? Modules = null,
-    [property: JsonPropertyName("captureIndexPath")] string? CaptureIndexPath = null
+    [property: JsonPropertyName("captureIndexPath")] string? CaptureIndexPath = null,
+    [property: JsonPropertyName("mails")] GameMailData? Mails = null,
+    [property: JsonPropertyName("achievements")] GameAchievementData? Achievements = null,
+    [property: JsonPropertyName("roles")] GameRoleData? Roles = null
 );
 
 /// <summary>事件写入的聚合状态；不会通过 UI 管道发送消息正文。</summary>

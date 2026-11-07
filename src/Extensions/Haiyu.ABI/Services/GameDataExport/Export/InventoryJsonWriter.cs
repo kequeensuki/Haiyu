@@ -211,6 +211,17 @@ public static class InventoryJsonWriter
             WriteSection(writer, "phantoms", result.Inventory?.Phantoms);
             WriteSection(writer, "validTimeItems", result.Inventory?.ValidTimeItems);
             writer.WriteEndObject();
+            if (result.Mails is { } mails) WriteSection(writer, "mails", mails.Items);
+            if (result.Roles is { } roles)
+            {
+                writer.WritePropertyName("roles");
+                JsonSerializer.Serialize(writer, roles, ABIJsonContext.Default.GameRoleData);
+            }
+            if (result.Achievements is { } achievements)
+            {
+                writer.WritePropertyName("achievements");
+                JsonSerializer.Serialize(writer, achievements, ABIJsonContext.Default.GameAchievementData);
+            }
 
             writer.WriteEndObject();
         }
@@ -254,6 +265,8 @@ public static class InventoryJsonWriter
     private static JsonTypeInfo<IReadOnlyList<T>>? ResolveTypeInfo<T>() =>
         typeof(T) switch
         {
+            var t when t == typeof(GameMailItem) =>
+                ABIJsonContext.Default.IReadOnlyListGameMailItem as JsonTypeInfo<IReadOnlyList<T>>,
             var t when t == typeof(GameNormalItem) =>
                 ABIJsonContext.Default.IReadOnlyListGameNormalItem as JsonTypeInfo<IReadOnlyList<T>>,
             var t when t == typeof(GameWeaponItem) =>

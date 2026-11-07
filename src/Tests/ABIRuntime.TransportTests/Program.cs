@@ -23,6 +23,17 @@ internal static partial class Program
         ABIMemoryPack.EnsureFormatters();
         var tests = new (string Name, Func<Task> Run)[]
         {
+            ("角色审查：后续列表合并/可选对象ACK/空全量", TestRoleListMergeAndOptionalResponseAsync),
+            ("角色：属性/技能/节点/主角切换/序列化", TestRoleDataChainAsync),
+            ("角色：声骸关联/转移/调谐/卸下/异常", TestRoleEquipmentChainAsync),
+            ("角色：失败/遗漏新增/全量恢复/隔离", TestRoleRecoveryAndIsolationAsync),
+            ("成就：状态/组奖励/进度/总数/序列化/全量替换", TestAchievementStatesAsync),
+            ("成就：领奖确认/失败响应/批内回滚/全量恢复", TestAchievementRewardAndRollbackAsync),
+            ("成就：缺失基线/切号隔离/同账号重登", TestAchievementBaselineAndIsolationAsync),
+            ("同账号重登：复用密钥/新全量替换/旧文件保护/增量续接", TestSameAccountReloginSnapshotAsync),
+            ("邮件：同步/新增/阅读/领取/收藏/删除/序列化", TestMailMutationChainAsync),
+            ("邮件：失败响应/批量回滚/多玩家与重登恢复", TestMailFailureAndIsolationAsync),
+            ("邮件：缺失基线/未读状态/缺失目标保护", TestMailMissingBaselineAsync),
             ("集合契约：默认增删改/快照冻结/失败与异常回滚", TestDataCollectionContractAsync),
             ("业务集合：覆盖新增/部分更新/跨对象装备/结构相等", TestDomainCollectionOverridesAsync),
             ("适配器扩展：独立数据类型/注册冲突/冻结快照", TestInventoryAdapterExtensionAsync),
@@ -75,7 +86,7 @@ internal static partial class Program
         };
 
         if (args.Contains("--game-data-export"))
-            tests = tests.Where(t => t.Run == TestDataCollectionContractAsync || t.Run == TestDomainCollectionOverridesAsync || t.Run == TestInventoryAdapterExtensionAsync || t.Run == TestConfirmedResumeNotificationAsync || t.Run == TestFilteredMessageModulesAsync || t.Run == TestModuleCompletionStatesAsync || t.Run == TestInventoryPendingVersionAsync || t.Run == TestAggregateSourcesAsync || t.Run == TestAggregatePagesAndDeltasAsync || t.Run == TestSharedOutputFencingAsync || t.Run == TestExportModuleRegistryAsync || t.Run == TestInventoryModuleIsolationAsync || t.Run == TestExportConsumerBoundariesAsync || t.Run == TestLoginIsolationAsync || t.Run == TestFrameValidationAsync
+            tests = tests.Where(t => t.Run == TestRoleListMergeAndOptionalResponseAsync || t.Run == TestRoleDataChainAsync || t.Run == TestRoleEquipmentChainAsync || t.Run == TestRoleRecoveryAndIsolationAsync || t.Run == TestAchievementStatesAsync || t.Run == TestAchievementRewardAndRollbackAsync || t.Run == TestAchievementBaselineAndIsolationAsync || t.Run == TestSameAccountReloginSnapshotAsync || t.Run == TestMailMutationChainAsync || t.Run == TestMailFailureAndIsolationAsync || t.Run == TestMailMissingBaselineAsync || t.Run == TestDataCollectionContractAsync || t.Run == TestDomainCollectionOverridesAsync || t.Run == TestInventoryAdapterExtensionAsync || t.Run == TestConfirmedResumeNotificationAsync || t.Run == TestFilteredMessageModulesAsync || t.Run == TestModuleCompletionStatesAsync || t.Run == TestInventoryPendingVersionAsync || t.Run == TestAggregateSourcesAsync || t.Run == TestAggregatePagesAndDeltasAsync || t.Run == TestSharedOutputFencingAsync || t.Run == TestExportModuleRegistryAsync || t.Run == TestInventoryModuleIsolationAsync || t.Run == TestExportConsumerBoundariesAsync || t.Run == TestLoginIsolationAsync || t.Run == TestFrameValidationAsync
                 || t.Run == TestParallelDecryptionAsync || t.Run == TestExportResultIsolationAsync
                 || t.Run == TestConnectionEndpointIsolationAsync || t.Run == TestSlowExportDrainAsync || t.Run == TestFullProtocolAsync || t.Run == TestEventFilesAsync || t.Run == TestKcpStreamWatermarkAsync
                 || t.Run == TestInventoryCaptureAsync || t.Run == TestPlayerIdResolverAsync

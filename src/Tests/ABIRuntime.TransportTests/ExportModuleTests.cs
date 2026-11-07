@@ -265,7 +265,7 @@ internal static partial class Program
             Equal(1, result.PlayerSummaries.Single(p => p.PlayerId == 222).UpdateCount);
             Equal(1, result.Inventory!.NormalItems.Single().Id);
             Equal("LatestComplete", modules[0].Artifacts.Last().Consistency);
-            Equal(4, modules[0].Artifacts.Last().Sources.Length);
+            Equal(8, modules[0].Artifacts.Last().Sources.Length);
             Equal(111, result.PlayerId);
             Equal(1L, modules.Single().Counters.Single(c => c.PlayerId == 111 && c.Name == "normalItems").Value);
             Equal(0L, modules.Single().Counters.Single(c => c.PlayerId == 222 && c.Name == "weapons").Value);
@@ -405,7 +405,12 @@ internal static partial class Program
             Equal(2, json.RootElement.GetProperty("inventory").GetProperty("normalItems").GetProperty("items")[0].GetProperty("id").GetInt32());
             var artifact = modules.Single().Artifacts.Single();
             Equal(2L, artifact.Revision);
-            Equal(true, artifact.Sources.All(s => s.SessionId == "login" && s.PlayerId == 123 && s.ReceivedAt is not null));
+            Equal(true, artifact.Sources.All(s => s.SessionId == "login" && s.PlayerId == 123 && (!s.Required || s.ReceivedAt is not null)));
+            var missingMail = artifact.Sources.Single(s => s.SourceId == "mails");
+            Equal("Missing", missingMail.State);
+            Equal(false, missingMail.Required);
+            Equal(true, missingMail.ReceivedAt is null); // 不能为未收到的来源伪造时间。
+
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }

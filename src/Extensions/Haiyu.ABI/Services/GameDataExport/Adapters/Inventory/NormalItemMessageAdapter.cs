@@ -4,7 +4,7 @@ using Haiyu.ABI.Services.GameDataExport.Protocol;
 
 namespace Haiyu.ABI.Services.GameDataExport.Adapters.Inventory;
 
-internal sealed class NormalItemMessageAdapter : InventoryMessageAdapter<int, NormalItemState, NormalItemChange>
+internal sealed class NormalItemMessageAdapter : CollectionMessageAdapter<int, NormalItemState, NormalItemChange>
 {
     internal NormalItemMessageAdapter() : base("normalItems", items => new NormalItemCollection(items), _ => 256)
     {

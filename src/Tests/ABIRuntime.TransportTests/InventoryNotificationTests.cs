@@ -239,7 +239,8 @@ internal static partial class Program
         fixture.Full(session: "login-B", player: 222);
         fixture.Feed(WavesMessageIds.NormalItemAddNotify, delta, "login-B", 222);
         fixture.Feed(WavesMessageIds.ItemRewardNotify, new ItemRewardNotify(), "login-B", 222);
-        fixture.Feed(WavesMessageIds.PbRoleActiveNotify, new PbRoleActiveNotify(), "login-B", 222);
+        fixture.Feed(WavesMessageIds.PbGetRoleListNotify, new PbGetRoleListNotify(), "login-B", 222);
+        fixture.Feed(WavesMessageIds.PbRoleActiveNotify, new PbRoleActiveNotify { Role = OwnedRole(1) }, "login-B", 222);
         fixture.Feed(WavesMessageIds.RoleSkinAddNotify, new RoleSkinAddNotify(), "login-B", 222);
         fixture.Feed(WavesMessageIds.WeaponSkinAddNotify, new WeaponSkinAddNotify(), "login-B", 222);
         fixture.Feed(WavesMessageIds.PhantomSkinAddNotify, new PhantomSkinAddNotify(), "login-B", 222);
@@ -247,7 +248,7 @@ internal static partial class Program
         fixture.Feed(WavesMessageIds.AddUnlockedGuideNotify, new AddUnlockedGuideNotify(), "login-B", 222);
         var modules = await fixture.Coordinator.FinishAsync(new(null, false));
         var events = modules.Single(module => module.ModuleId == "item-changes");
-        Equal(17L, events.Counters.Single(counter => counter.PlayerId is null && counter.Name == "written").Value);
+        Equal(18L, events.Counters.Single(counter => counter.PlayerId is null && counter.Name == "written").Value);
         var inventory = modules.Single(module => module.ModuleId == "inventory");
         Equal(0L, inventory.Counters.Single(counter => counter.PlayerId == 111 && counter.Name == "normalItems").Value);
         Equal(1L, inventory.Counters.Single(counter => counter.PlayerId == 222 && counter.Name == "normalItems").Value);

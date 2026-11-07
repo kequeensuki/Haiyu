@@ -73,16 +73,44 @@ try
         new PhantomItemAddNotify { PhantomItemList = { new PhantomItem { Id = 30, IncrId = 301, StackCount = 3, AddTime = 42 } } }.ToByteArray()));
     capture.ConsumeRaw(Frame(WavesMessageIds.PhantomIdentifyResponse,
         new PhantomIdentifyResponse { UpdateInfo = new PhantomItem { Id = 30, IncrId = 301, PhantomLevel = 10 } }.ToByteArray()));
+    capture.ConsumeRaw(Frame(WavesMessageIds.MailInfosNotify, new MailInfosNotify { MailInfos = {
+        new PbMailInfo { Id = "mail-001", Title = "邮件", Content = "正文", Sender = "server", ReceivedTime = 123,
+            Attachments = { new PbMailAttachment { Id = 1, Count = 2 } } } } }.ToByteArray()));
+    capture.ConsumeRaw(Frame(WavesMessageIds.MailReadResponse,
+        new MailReadResponse { Id = "mail-001", State = 1, ReadTime = 456, ExpiryTime = 789 }.ToByteArray()));
+    capture.ConsumeRaw(Frame(WavesMessageIds.MailGetAttachmentResponse,
+        new MailGetAttachmentResponse { SuccessIdMap = { { "mail-001", 3 } } }.ToByteArray()));
+    capture.ConsumeRaw(Frame(WavesMessageIds.AchievementInfoResponse, new AchievementInfoResponse { FinishCount = 1, StarCount = 5,
+        AchievementGroupInfoList = { new AchievementGroupInfo { AchievementGroupEntry = new AchievementGroupEntry { Id = 10 },
+            AchievementEntryList = { new AchievementEntry { Id = 1, FinishTime = uint.MaxValue,
+                Progress = new AchievementProgress { CurProgress = 10, TotalProgress = 10 } } } } } }.ToByteArray()));
+    capture.ConsumeRaw(Frame(WavesMessageIds.AchievementProgressNotify, new AchievementProgressNotify {
+        AchievementEntry = new AchievementEntry { Id = 1, FinishTime = uint.MaxValue, IsReceive = true,
+            Progress = new AchievementProgress { CurProgress = 10, TotalProgress = 10 } } }.ToByteArray()));
+    capture.ConsumeRaw(Frame(WavesMessageIds.PbGetRoleListNotify, new PbGetRoleListNotify { RoleList = {
+        new roleInfo { RoleId = 1, Level = 90, Skills = { new ArrayIntInt { Key = 100, Value = 1 } },
+            BaseProp = { new ArrayIntInt { Key = 1, Value = 100 } } } } }.ToByteArray()));
+    capture.ConsumeRaw(Frame(WavesMessageIds.PhantomPutOnResponse, new PhantomPutOnResponse { EquipInfoList = {
+        new RolePhantomEquipInfo { RoleId = 1, PhantomItemIncrId = { 301 } } } }.ToByteArray()));
+    capture.ConsumeRaw(Frame(WavesMessageIds.PbRoleSkillLevelNotify, new PbRoleSkillLevelNotify { RoleId = 1,
+        SkillInfo = new ArrayIntInt { Key = 100, Value = 10 } }.ToByteArray()));
     context.RememberLegacyMetadata(capture.Session);
     var modules = await coordinator.FinishAsync(new(null, false));
     var result = coordinator.LegacyResult(modules);
     var wire = MemoryPackSerializer.Serialize(result, ABIMemoryPack.Options);
     var round = MemoryPackSerializer.Deserialize<GameDataExportResult>(wire, ABIMemoryPack.Options)!;
-    if (!round.Success || round.Modules?.Length != 3 || round.EventExport?.Written != 10
+    if (!round.Success || round.Modules?.Length != 3 || round.EventExport?.Written != 18
+        || round.Roles?.Items.Single().Skills.Single().Value != 10
+        || round.Roles.Items.Single().Echoes[0].Item?.PhantomLevel != 10
+        || round.Roles.Items.Single().Attributes.Single().Value != 100
         || round.Inventory?.NormalItems.Single().Count != 2
         || round.Inventory.Weapons.Single().WeaponLevel != 40 || round.Inventory.Weapons.Single().WeaponExp != 123
         || round.Inventory.Phantoms.Single().PhantomLevel != 10 || round.Inventory.Phantoms.Single().StackCount != 3
-        || round.Inventory.Phantoms.Single().AddTime != 42 || !File.Exists(round.CaptureIndexPath)
+        || round.Inventory.Phantoms.Single().AddTime != 42
+        || round.Mails?.Items.Single().IsRead != true || round.Mails.Items.Single().AttachmentStatus != "claimed"
+        || round.Mails.Items.Single().ReadTime != 456
+        || round.Achievements?.Items.Single().RewardClaimed != true || round.Achievements.Items.Single().FinishTime != uint.MaxValue
+        || round.Achievements.Groups.Single().RewardClaimed || !File.Exists(round.CaptureIndexPath)
         || !File.Exists(round.OutputJsonPath)) throw new Exception("module lifecycle or AOT ABI serialization failed");
     Console.WriteLine($"PASS NativeAOT protocol smoke: messages={catalog.Messages.Count}, registered={catalog.Ids.Count}, elapsedMs={watch.ElapsedMilliseconds}, managedBytes={GC.GetTotalMemory(true)}");
 }

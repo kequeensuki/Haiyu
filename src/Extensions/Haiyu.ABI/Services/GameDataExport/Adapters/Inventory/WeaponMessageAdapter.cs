@@ -5,7 +5,7 @@ using Haiyu.ABI.Services.GameDataExport.Protocol;
 
 namespace Haiyu.ABI.Services.GameDataExport.Adapters.Inventory;
 
-internal sealed class WeaponMessageAdapter : InventoryMessageAdapter<int, WeaponState, WeaponChange>
+internal sealed class WeaponMessageAdapter : CollectionMessageAdapter<int, WeaponState, WeaponChange>
 {
     internal WeaponMessageAdapter() : base("weapons", items => new WeaponCollection(items), _ => 512)
     {
@@ -18,7 +18,7 @@ internal sealed class WeaponMessageAdapter : InventoryMessageAdapter<int, Weapon
         On(WavesMessageIds.EquipTakeOnResponse, 2, (m, c) => Equipment(m, 1, c));
         On(WavesMessageIds.EquipTakeOnNotify, 0, (m, c) => Equipment(m, 5, c));
     }
-    internal InventoryMessageChange FunctionChange(ProtocolMessage message) =>
+    internal CollectionMessageChange FunctionChange(ProtocolMessage message) =>
         Delta(message, (m, c) => c.Update(m.Int32(1), new WeaponFunctionChanged(m.Int32(14))));
     private static ChangeResult Equipment(ProtocolMessage message, int field, IDataCollection<int, WeaponState, WeaponChange> items) =>
         Each(message.Messages(field).Where(equip => equip.Int32(2) == 0), equip =>

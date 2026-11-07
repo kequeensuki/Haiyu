@@ -54,6 +54,17 @@ public static class ABIMemoryPack
         MemoryPackFormatterProvider.Register<GameDataExportEventStats>();
         MemoryPackFormatterProvider.Register<GameDataExportPlayerEventStats>();
         MemoryPackFormatterProvider.Register<GameDataExportPlayerSummary>();
+        MemoryPackFormatterProvider.Register<GameRoleData>();
+        MemoryPackFormatterProvider.Register<GameRoleItem>();
+        MemoryPackFormatterProvider.Register<GameRoleValue>();
+        MemoryPackFormatterProvider.Register<GameRoleSkillNode>();
+        MemoryPackFormatterProvider.Register<GameRoleEcho>();
+        MemoryPackFormatterProvider.Register<GameAchievementData>();
+        MemoryPackFormatterProvider.Register<GameAchievementItem>();
+        MemoryPackFormatterProvider.Register<GameAchievementGroup>();
+        MemoryPackFormatterProvider.Register<GameMailData>();
+        MemoryPackFormatterProvider.Register<GameMailItem>();
+        MemoryPackFormatterProvider.Register<GameMailAttachment>();
         MemoryPackFormatterProvider.Register<GameInventoryData>();
         MemoryPackFormatterProvider.Register<GameNormalItem>();
         MemoryPackFormatterProvider.Register<GameWeaponItem>();

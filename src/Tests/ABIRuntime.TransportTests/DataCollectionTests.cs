@@ -1,7 +1,6 @@
-using Haiyu.ABI.Services.GameDataExport.Adapters.Inventory;
+using Haiyu.ABI.Services.GameDataExport.Adapters;
 using Haiyu.ABI.Services.GameDataExport.Aggregation.Collections;
 using Haiyu.ABI.Services.GameDataExport.Aggregation.Contracts;
-using Haiyu.ABI.Services.GameDataExport.Domains.Inventory;
 using Haiyu.ABI.Services.GameDataExport.Domains.Inventory.NormalItems;
 using Haiyu.ABI.Services.GameDataExport.Domains.Inventory.Phantoms;
 using Haiyu.ABI.Services.GameDataExport.Domains.Inventory.ValidTimeItems;
@@ -120,7 +119,7 @@ internal static partial class Program
         return Task.CompletedTask;
     }
 
-    private sealed class EntryMessageAdapter : InventoryMessageAdapter<int, ExportEntry, ExportEntryChange>
+    private sealed class EntryMessageAdapter : CollectionMessageAdapter<int, ExportEntry, ExportEntryChange>
     {
         internal EntryMessageAdapter() : base("entries", items => new ExportEntryCollection(items), _ => 128)
         {
@@ -131,22 +130,22 @@ internal static partial class Program
     private static Task TestInventoryAdapterExtensionAsync()
     {
         var adapter = new EntryMessageAdapter();
-        var registry = new InventoryMessageRegistry([adapter]);
+        var registry = new PlayerDataMessageRegistry([adapter]);
         Equal("entries", registry.Sources.Single());
         var decoder = new ProtocolJsonDecoder(ProtocolCatalog.Default.Value);
         // 独立 wire 向量：使用已有载荷形状验证新增数据类型无需改中央分支。
         var model = decoder.Decode(WavesMessageIds.NormalItemResponse, [26, 4, 8, 1, 16, 2]).Message!;
         var full = registry.Handlers[65000].Decode(model, _ => null).Single().Full!();
-        Equal(2, ((InventorySnapshot<ExportEntry>)full).Items.Single().Value);
+        Equal(2, ((CollectionSnapshot<ExportEntry>)full).Items.Single().Value);
         var changed = decoder.Decode(WavesMessageIds.NormalItemResponse, [26, 4, 8, 1, 16, 7]).Message!;
         var apply = registry.Handlers[65001].Decode(changed, _ => full).Single().Apply!;
         var updated = apply(full);
-        Equal(7, ((InventorySnapshot<ExportEntry>)updated).Items.Single().Value);
-        Equal(2, ((InventorySnapshot<ExportEntry>)full).Items.Single().Value);
+        Equal(7, ((CollectionSnapshot<ExportEntry>)updated).Items.Single().Value);
+        Equal(2, ((CollectionSnapshot<ExportEntry>)full).Items.Single().Value);
         Equal(true, ReferenceEquals(updated, apply(updated)));
         try
         {
-            _ = new InventoryMessageRegistry([adapter, adapter]);
+            _ = new PlayerDataMessageRegistry([adapter, adapter]);
             throw new Exception("重复消息注册未被拒绝");
         }
         catch (ArgumentException) { }

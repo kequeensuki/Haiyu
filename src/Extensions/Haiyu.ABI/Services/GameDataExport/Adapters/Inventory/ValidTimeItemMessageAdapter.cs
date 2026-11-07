@@ -4,7 +4,7 @@ using Haiyu.ABI.Services.GameDataExport.Protocol;
 
 namespace Haiyu.ABI.Services.GameDataExport.Adapters.Inventory;
 
-internal sealed class ValidTimeItemMessageAdapter : InventoryMessageAdapter<(int Id, int IncrId), ValidTimeItemState, ValidTimeItemChange>
+internal sealed class ValidTimeItemMessageAdapter : CollectionMessageAdapter<(int Id, int IncrId), ValidTimeItemState, ValidTimeItemChange>
 {
     internal ValidTimeItemMessageAdapter() : base("validTimeItems", items => new ValidTimeItemCollection(items), _ => 256)
     {
