@@ -33,7 +33,12 @@ description: 为 Haiyu 的鸣潮游戏数据导出新增或修复指定业务数
 - 运行 `git status --short`、`git branch --show-current`、`git log -3 --oneline`。保留既有未提交改动；不要重置、清理或覆盖它们。
 - 明确“某项数据”包括哪些对象、字段及操作。例：邮件不仅是标题，还可能包括已读、附件领取、收藏和删除；成就完成不等于奖励领取。
 - 区分要求：捕获原始事件、聚合玩家最新快照、关联配置展示、主动向服务器请求数据，是不同工作。当前扩展通常是**被动消费已捕获下行消息**，不擅自增加主动请求。
-- 找到本机的 .NET SDK、Haiyu 源码、协议元数据、客户端源码和必要的配置仓库。路径通过搜索/环境定位，不照抄其他机器的 `/workspace/...`。
+- 找到本机的 .NET SDK、Haiyu 源码和协议元数据。Windows 环境优先检查用户约定的参考路径：
+  - 游戏源码：`%USERPROFILE%/Desktop/WutheringMod/DecompiledSource`。
+  - 游戏各种数据及配置：`%USERPROFILE%/Desktop/WutheringWaves_Data`。
+  - PowerShell 中分别写作 `$env:USERPROFILE/Desktop/WutheringMod/DecompiledSource` 和 `$env:USERPROFILE/Desktop/WutheringWaves_Data`；实际命令使用已展开的路径并正确加引号，不把 `%USERPROFILE%` 原样当作 PowerShell 变量。
+  - 源码按任务继续定位 `Aki.Game`（业务处理）或 `Aki.Protocol`（协议）；数据仓库核对实际分支、版本和提交，本任务系列使用 `3.7` 分支。
+  - 仅在约定路径不存在或当前不是该 Windows 环境时，再搜索本机对应位置；不要照抄云端 `/workspace/...`。参考源码及数据作为只读资料使用，并读取适用的 `AGENTS.md`。
 - 只有关键事实无法从可用代码或数据确认时，才提出具体缺失信息；先完成不依赖答案的工作。不要猜测协议、主动请求或业务规则来填空。
 
 **产物：**一段任务范围、已存在改动的记录，以及待完成的证据表。
