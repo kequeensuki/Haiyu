@@ -117,8 +117,23 @@ internal static partial class Program
                 null, 10, state.Inventory.DecodedFrames, null, state.Session.PlayerId.PlayerId, 1);
             var path = InventoryJsonWriter.TryWriteToRoot(root, result, DateTimeOffset.Now)!;
             Equal("123456", Path.GetFileName(Path.GetDirectoryName(path)));
+            Equal("game-data.json", Path.GetFileName(path));
+            var legacy = Path.Combine(Path.GetDirectoryName(path)!, "game-data-20260101-120000.json");
+            File.WriteAllText(legacy, "legacy");
+            var previous = File.ReadAllText(path);
+            Directory.CreateDirectory(path + ".tmp"); // 模拟原子写暂存目标不可写。
+            Equal(true, InventoryJsonWriter.TryWriteToRoot(root, result with { DecodedFrames = 999 }, DateTimeOffset.Now) is null);
+            Equal(previous, File.ReadAllText(path));
+            Equal(true, File.Exists(legacy));
+            Directory.Delete(path + ".tmp");
+
+            var nextPath = InventoryJsonWriter.TryWriteToRoot(root, result with { DecodedFrames = 6 }, DateTimeOffset.Now.AddDays(1));
+            Equal(path, nextPath);
+            Equal(false, File.Exists(legacy));
+            Equal(1, Directory.GetFiles(Path.GetDirectoryName(path)!, "*.json").Length);
+
             using var json = JsonDocument.Parse(File.ReadAllText(path));
-            Equal(5, json.RootElement.GetProperty("stats").GetProperty("decodedFrames").GetInt32());
+            Equal(6, json.RootElement.GetProperty("stats").GetProperty("decodedFrames").GetInt32());
             Equal(99, json.RootElement.GetProperty("inventory").GetProperty("normalItems")
                 .GetProperty("items")[0].GetProperty("id").GetInt32());
         }

@@ -269,6 +269,46 @@ internal static partial class Program
             Equal(111, result.PlayerId);
             Equal(1L, modules.Single().Counters.Single(c => c.PlayerId == 111 && c.Name == "normalItems").Value);
             Equal(0L, modules.Single().Counters.Single(c => c.PlayerId == 222 && c.Name == "weapons").Value);
+
+            // 新捕获会话仍更新同一玩家文件；全量基线未齐时保留旧快照和旧格式文件。
+            var latest = Path.Combine(root, "111", "game-data.json");
+            Equal(latest, modules.Single().Artifacts.Single(a => a.PlayerId == 111).Path);
+            var before = File.ReadAllText(latest);
+            var legacy = Path.Combine(root, "111", "game-data-20260101-120000.json");
+            var unrelated = Path.Combine(root, "111", "game-data-notes.json");
+            var otherLegacy = Path.Combine(root, "222", "game-data-20260101-120000.json");
+            File.WriteAllText(legacy, before);
+            File.WriteAllText(unrelated, "keep");
+            File.WriteAllText(otherLegacy, "other player");
+            clock.Advance(TimeSpan.FromDays(1));
+            var nextContext = new ExportCaptureContext(new JsonExportStore(root), clock);
+            await using var nextCapture = new ExportCoordinator(nextContext, BuiltInExportModules.Create(), ["inventory"]);
+            void Next(ushort id, byte[] bytes)
+            {
+                nextCapture.Observe(new(new(GatewayMessageType.Push, 0, 0, 0, id, 0, bytes), bytes, 111, "new-capture", 1,
+                    null, decoder.Decode(id, bytes)));
+            }
+            Next(WavesMessageIds.NormalItemResponse, [26, 4, 8, 9, 16, 7]);
+            nextCapture.Checkpoint();
+            await nextContext.Output.FlushAsync();
+            Equal(before, File.ReadAllText(latest));
+            Equal(true, File.Exists(legacy));
+            Next(WavesMessageIds.WeaponItemResponse, []);
+            Next(WavesMessageIds.PhantomItemResponse, []);
+            Next(WavesMessageIds.ValidTimeItemResponse, []);
+            var nextModules = await nextCapture.FinishAsync(new(null, false));
+            Equal(GameDataExportModuleState.Completed, nextModules.Single().State);
+            Equal(latest, nextModules.Single().Artifacts.Single().Path);
+            Equal(false, File.Exists(legacy));
+            Equal("keep", File.ReadAllText(unrelated));
+            Equal("other player", File.ReadAllText(otherLegacy));
+            Equal(true, File.Exists(Path.Combine(root, "222", "game-data.json")));
+            using var latestJson = JsonDocument.Parse(File.ReadAllText(latest));
+            Equal(9, latestJson.RootElement.GetProperty("inventory").GetProperty("normalItems")
+                .GetProperty("items")[0].GetProperty("id").GetInt32());
+            using var index = JsonDocument.Parse(File.ReadAllText(nextContext.IndexPath));
+            Equal(latest, index.RootElement.GetProperty("modules")[0].GetProperty("artifacts")[0].GetProperty("path").GetString());
+
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
@@ -289,7 +329,7 @@ internal static partial class Program
                 foreach (var module in modules)
                     Equal(module.ModuleId == "inventory" ? GameDataExportModuleState.Incomplete : GameDataExportModuleState.Completed, module.State);
                 Equal(selected.Length == 1 && selected[0] == "server-messages", coordinator.LegacyResult(modules).Success);
-                if (!selected.Contains("inventory")) Equal(false, Directory.Exists(Path.Combine(root, "123")) && Directory.GetFiles(Path.Combine(root, "123"), "game-data-*.json").Length > 0);
+                if (!selected.Contains("inventory")) Equal(false, Directory.Exists(Path.Combine(root, "123")) && File.Exists(Path.Combine(root, "123", "game-data.json")));
                 if (selected.Contains("server-messages"))
                 {
                     var result = coordinator.LegacyResult(modules);

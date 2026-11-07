@@ -1,4 +1,5 @@
 using System.Text;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
@@ -20,6 +21,29 @@ public static class GameDataExportPaths
             "GameDataExport"
         );
 
+    public const string LatestSnapshotFileName = "game-data.json";
+
+    internal static string PlayerSnapshotRelativePath(int playerId) =>
+        Path.Combine(playerId.ToString(CultureInfo.InvariantCulture), LatestSnapshotFileName);
+
+    /// <summary>仅在新快照成功落盘后清理同一玩家的旧时间戳快照；其他文件和子目录不动。</summary>
+    internal static void RemoveLegacySnapshots(string latestPath)
+    {
+        if (Path.GetFileName(latestPath) != LatestSnapshotFileName || !File.Exists(latestPath)) return;
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(Path.GetDirectoryName(latestPath)!, "game-data-*.json"))
+            {
+                var name = Path.GetFileName(path);
+                if (name.Length != 30 || !DateTime.TryParseExact(name[10..25], "yyyyMMdd-HHmmss",
+                    CultureInfo.InvariantCulture, DateTimeStyles.None, out _)) continue;
+                try { File.Delete(path); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
     /// <summary>生成带时间戳的 JSON 文件路径，并确保目录存在。（v1 保留：回放工具用）</summary>
     public static string BuildJsonPath(DateTimeOffset timestamp)
     {
@@ -31,16 +55,16 @@ public static class GameDataExportPaths
     }
 
     /// <summary>
-    /// v2 会话路径：<c>GameDataExport\{playerId}\game-data-{sessionStart}.json</c>。
-    /// 同一玩家多次会话 = 同目录多个文件（时间戳不同），历史可查。
+    /// 玩家最新快照路径：<c>GameDataExport\{playerId}\game-data.json</c>。
+    /// 跨捕获会话覆盖同一文件；保留参数以兼容现有调用。
     /// </summary>
     public static string BuildSessionPath(int playerId, DateTimeOffset sessionStart)
     {
-        var directory = Path.Combine(OutputDirectory, playerId.ToString());
+        var directory = Path.Combine(OutputDirectory, playerId.ToString(CultureInfo.InvariantCulture));
         Directory.CreateDirectory(directory);
         return Path.Combine(
             directory,
-            $"game-data-{sessionStart:yyyyMMdd-HHmmss}.json"
+            LatestSnapshotFileName
         );
     }
 }
@@ -63,8 +87,8 @@ public static class InventoryJsonWriter
     /// <summary>尝试落盘，成功返回文件路径，失败返回 <c>null</c>。</summary>
     /// <remarks>
     /// ★ v2 原子写（持续监控下的更新语义）：
-    ///   ① playerId 已知（&gt;0）→ 会话路径 <c>{playerId}\game-data-{ts}.json</c>，
-    ///      同一会话的每次更新覆盖同一文件；
+    ///   ① playerId 已知（&gt;0）→ 玩家路径 <c>{playerId}\game-data.json</c>，
+    ///      每次完整更新覆盖同一文件，包括后续捕获会话；
     ///   ② 写同目录 <c>.tmp</c> → <see cref="File.Replace"/>（NTFS 原子）/
     ///      目标不存在时 <see cref="File.Move"/>（首次写无替换对象）；
     ///      任何一步失败保留旧文件不动（数据安全），返回 null；
@@ -92,7 +116,7 @@ public static class InventoryJsonWriter
         try
         {
             var path = result.PlayerId > 0
-                ? Path.Combine(rootDirectory, result.PlayerId.ToString(), $"game-data-{timestamp:yyyyMMdd-HHmmss}.json")
+                ? Path.Combine(rootDirectory, GameDataExportPaths.PlayerSnapshotRelativePath(result.PlayerId))
                 : Path.Combine(rootDirectory, $"game-data-{timestamp:yyyyMMdd-HHmmss}.json");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             using var document = BuildDocument(result, timestamp);
@@ -127,6 +151,7 @@ public static class InventoryJsonWriter
             else
                 File.Move(tmpPath, path);          // 首次写：无替换对象
 
+            GameDataExportPaths.RemoveLegacySnapshots(path);
             return path;
         }
         catch (IOException)

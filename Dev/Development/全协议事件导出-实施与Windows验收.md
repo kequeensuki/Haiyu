@@ -14,7 +14,7 @@
 GameDataExport/
   captures/{captureId}/manifest.json
   captures/{captureId}/unresolved-000001.jsonl
-  {playerId}/game-data-{原时间戳}.json
+  {playerId}/game-data.json
   {playerId}/captures/{captureId}/events-000001.jsonl
 ```
 

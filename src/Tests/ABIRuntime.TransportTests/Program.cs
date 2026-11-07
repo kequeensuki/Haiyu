@@ -23,6 +23,8 @@ internal static partial class Program
         ABIMemoryPack.EnsureFormatters();
         var tests = new (string Name, Func<Task> Run)[]
         {
+            ("武器变更链：养成/装备/增删改/失同步恢复", TestWeaponMutationChainAsync),
+            ("声骸变更链：拆合堆/标记/失同步/全量恢复", TestMutationDesyncRecoveryAsync),
             ("道具通知：绝对数量/实例键/增删改/幂等", TestInventoryNotificationsAsync),
             ("声骸响应：升级/调谐/确认/堆叠/失败不覆盖", TestPhantomMutationResponsesAsync),
             ("库存与养成字段：数量/获得时间/已有武器/缺省字段", TestInventoryModelFieldSemanticsAsync),
@@ -79,6 +81,7 @@ internal static partial class Program
                 || t.Run == TestNetworkCandidatesAsync || t.Run == TestMultiInterfaceCaptureAsync
                 || t.Run == TestNetworkReconnectAsync || t.Run == TestAccountMonitoringAsync
                 || t.Run == TestKeyTimeoutCleanupAsync || t.Run == TestModuleCatalogRegistrationAsync
+                || t.Run == TestWeaponMutationChainAsync || t.Run == TestMutationDesyncRecoveryAsync
                 || t.Run == TestInventoryNotificationsAsync || t.Run == TestPhantomMutationResponsesAsync
                 || t.Run == TestNotificationBaselineAndEventsAsync || t.Run == TestInventoryModelFieldSemanticsAsync).ToArray();
 
@@ -328,10 +331,12 @@ internal static partial class Program
             var json = File.ReadAllText(path2);
             StringContains(json, "20");
 
-            // 第二个会话（时间戳不同）同目录共存
+            // 第二个会话（时间戳不同）仍覆盖同一玩家的最新聚合快照
             var path3 = Haiyu.ABI.Services.GameDataExport.Export.InventoryJsonWriter.TryWriteToRoot(root, MakeResult(5, 1), sessionStart.AddSeconds(1));
-            Equal(true, path3 is not null && path3 != path2);
-            Equal(true, File.Exists(path2)); // 旧会话文件不受影响
+            Equal(path2, path3);
+            Equal(1, Directory.GetFiles(Path.Combine(root, "42"), "*.json").Length);
+            using var latest = JsonDocument.Parse(File.ReadAllText(path3!));
+            Equal(5, latest.RootElement.GetProperty("inventory").GetProperty("normalItems").GetProperty("count").GetInt32());
 
             // playerId=0 → 平铺路径（v1 兼容行为）
             var legacy = Haiyu.ABI.Services.GameDataExport.Export.InventoryJsonWriter.TryWriteToRoot(

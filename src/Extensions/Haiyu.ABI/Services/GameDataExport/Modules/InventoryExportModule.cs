@@ -1,4 +1,3 @@
-using System.Globalization;
 using ABI.Models;
 using Haiyu.ABI.Protocol;
 using Haiyu.ABI.Services.GameDataExport.Aggregation;
@@ -52,37 +51,57 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
         var state = Get(message.SessionId, message.PlayerId ?? 0);
         _current = state;
         var rule = InventoryMessageProjection.Rules[message.Frame.MsgId];
-        var source = state.Aggregate.Source(rule.Source);
+        var rules = rule.Operation == InventoryMessageProjection.Operation.FuncValue
+            ? new[] { rule, rule with { Source = "weapons", ListField = 6 } } : new[] { rule };
         _progressRevision++;
         if (message.Status is not null || message.Protocol?.Message is not { } model
             || !message.Protocol.DecodeStatus.StartsWith("decoded", StringComparison.Ordinal))
         {
+            foreach (var affected in rules) state.Aggregate.Source(affected.Source).Reject("inventory_decode_failed", true);
             state.Error = "背包消息解密或 protobuf 解析失败，保留上次文件。";
-            source.Reject("inventory_decode_failed", true);
             return;
         }
         state.Decoded++;
-        // 失败响应不更新状态，也不把错误响应缺少 UpdateInfo 当成空背包。
         if (rule.ErrorField != 0 && model.Int32(rule.ErrorField) != 0) return;
+        if (rule.Operation == InventoryMessageProjection.Operation.FuncValue)
+        {
+            // 该通知没有道具类型；只更新已确认归属的实例，不能猜测缺失对象的来源。
+            var matched = rules.Where(r => state.Aggregate.Source(r.Source).Value?.Messages(r.ListField)
+                .Any(item => item.Int32(2) == model.Int32(1)) == true).ToArray();
+            if (matched.Length != 1)
+            {
+                foreach (var affected in rules) state.Aggregate.Source(affected.Source).Reject("item_identity_unresolved", true);
+                state.Error = "道具标记通知无法唯一定位实例，等待完整背包基线。";
+                return;
+            }
+            rules = matched;
+        }
         var provenance = new SourceProvenance(message.EventIndex, message.EventIndex,
             message.ReceivedAt ?? context.Clock.GetUtcNow(), message.ConnectionId);
-        ProtocolMessage Budget(ProtocolMessage value)
+        foreach (var affected in rules)
         {
-            var size = InventoryMessageProjection.RetainedBytes(value);
-            var total = _states.Values.Sum(s => s.Sizes.Values.Sum()) - state.Sizes.GetValueOrDefault(rule.Source) + size;
-            if (total > 32 * 1024 * 1024) throw new IOException("背包聚合状态超过内存预算。");
-            return value;
+            var source = state.Aggregate.Source(affected.Source);
+            ProtocolMessage Budget(ProtocolMessage value)
+            {
+                var size = InventoryMessageProjection.RetainedBytes(value);
+                var total = _states.Values.Sum(s => s.Sizes.Values.Sum()) - state.Sizes.GetValueOrDefault(affected.Source) + size;
+                if (total > 32 * 1024 * 1024) throw new IOException("背包聚合状态超过内存预算。");
+                return value;
+            }
+            if (affected.Operation == InventoryMessageProjection.Operation.Full)
+            {
+                try { source.Full(Budget(InventoryMessageProjection.Full(affected, model)), provenance: provenance); }
+                catch (InvalidDataException) { source.Reject("invalid_inventory_baseline", true); }
+            }
+            else if (affected.Operation == InventoryMessageProjection.Operation.Invalidate)
+                source.Reject("mutation_requires_request_context", true);
+            else
+                source.ApplyOrdered(baseline => Budget(InventoryMessageProjection.Apply(affected, baseline, model)), provenance);
+            if (source.Value is { } retained) state.Sizes[affected.Source] = InventoryMessageProjection.RetainedBytes(retained);
         }
-        if (rule.Operation == InventoryMessageProjection.Operation.Full)
-        {
-            try { source.Full(Budget(InventoryMessageProjection.Full(rule, model)), provenance: provenance); }
-            catch (InvalidDataException) { source.Reject("invalid_inventory_baseline", true); }
-        }
-        else
-            source.ApplyOrdered(baseline => Budget(InventoryMessageProjection.Apply(rule, baseline, model)), provenance);
-        if (source.Value is { } retained) state.Sizes[rule.Source] = InventoryMessageProjection.RetainedBytes(retained);
-        state.Error = source.Error;
+        state.Error = state.Aggregate.Progress().FirstOrDefault(source => source.Error is not null)?.Error;
     }
+
     private State Get(string session, int player)
     {
         if (_states.TryGetValue(session, out var state))
@@ -116,7 +135,7 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
         else if (change.Kind == ExportSessionChangeKind.LoginStarted) _current = Get(change.SessionId, 0);
         else if (change.Kind == ExportSessionChangeKind.Logout) _current = null;
     }
-    private string Relative(int player) => Path.Combine(player.ToString(CultureInfo.InvariantCulture), $"game-data-{context.StartedAt:yyyyMMdd-HHmmss}.json");
+    private static string Relative(int player) => GameDataExportPaths.PlayerSnapshotRelativePath(player);
     public void Checkpoint(bool stopping = false)
     {
         foreach (var state in _states.Values)
@@ -152,6 +171,7 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
         if (receipt.Superseded) { state.Candidate = null; return; }
         if (receipt.Error is not null) { state.Error = receipt.Error; return; }
         if (!state.Aggregate.Acknowledge(snapshot)) return;
+        GameDataExportPaths.RemoveLegacySnapshots(receipt.Path!);
         state.Candidate = null;
         state.Error = state.Aggregate.Progress().FirstOrDefault(source => source.Error is not null)?.Error;
         result = result with { UpdateCount = (_players.GetValueOrDefault(state.Player)?.UpdateCount ?? 0) + 1 };

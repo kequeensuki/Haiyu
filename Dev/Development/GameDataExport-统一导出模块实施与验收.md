@@ -43,7 +43,7 @@ UI 通过 `IGameDataExportCatalogService` 查询 ABI 宿主中的模块目录，
 
 原有文件兼容：
 
-- 背包：`{playerId}/game-data-{captureStart:yyyyMMdd-HHmmss}.json`，字段、计数包装、sessionKeyHex 等旧格式保留。
+- 背包：`{playerId}/game-data.json`，字段、计数包装、sessionKeyHex 等旧格式保留。
 - 事件：`{playerId}/captures/{captureId}/events-*.jsonl`、未归属分片和 `captures/{captureId}/manifest.json`。
 - 配置化消息模块使用 `modules/{moduleId}` 子目录隔离分片与 manifest；模块内 eventIndex 连续，captureEventIndex 保留原捕获消息序号，多个筛选模块可以同时启用。
 - 新增总索引：`captures/{captureId}/capture-index.json`，登记每个启用模块的独立状态、计数、来源和产物；事件 manifest 只代表消息模块。
@@ -137,3 +137,12 @@ Get-FileHash '.\src\Extensions\Haiyu.ABI\bin\win-x64\publish\Haiyu.ABI.dll', $de
 两者哈希应一致。启动新发布的 Haiyu，打开游戏数据导出并确认 UAC，窗口应加载模块选择项，不再显示未注册 Service。开始导出后应进入正常捕获流程。已重定向文档目录的机器应满足同一标准。
 
 无需删除用户目录下此前误部署的文件；应用仍使用现有文档目录架构。退出并重新启动 Haiyu 可使其启动新的 ABI 宿主，避免沿用旧进程。
+
+
+## 玩家最新聚合快照
+
+背包聚合结果固定保存为 `GameDataExport/{playerId}/game-data.json`，同一玩家跨捕获会话覆盖更新，不再新增时间戳快照。只有取得完整的四类基线并成功原子写入后，才清理该玩家目录中严格匹配 `game-data-yyyyMMdd-HHmmss.json` 的旧快照；未就绪或写入失败时保留已有数据。其他文件、其他玩家目录和消息 JSONL 不受清理影响。旧快照若被占用或无删除权限则保留，后续成功更新时重试。
+
+`capture-index.json` 的背包产物路径指向这份最新文件；旧捕获索引中的该路径不是历史版本承诺，其 revision / sources 描述当次捕获结束时的状态。旧版本已生成的索引保留原样，不回写历史文件。
+
+回归覆盖跨捕获日期更新、基线未齐保留旧数据、旧时间戳清理、其他玩家与无关文件隔离，以及新索引中的固定路径。
