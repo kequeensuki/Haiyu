@@ -32,9 +32,11 @@ public enum GameDataExportScope
     /// <summary>全部服务端消息事件；可与背包快照同时导出。</summary>
     AllServerMessages = 1 << 1,
 
+    /// <summary>抽卡记录；独立落盘到 <c>&lt;playerId&gt;/gacha/</c>，对同一 playerId 跨会话累积。</summary>
+    Gacha = 1 << 2,
+
     // 预留（首版不实现）
-    // Gacha  = 1 << 1,
-    // Player = 1 << 2,
+    // Player = 1 << 3,
 }
 
 /// <summary>导出阶段。</summary>
@@ -99,7 +101,9 @@ public sealed partial record GameDataExportResult(
     [property: JsonPropertyName("captureIndexPath")] string? CaptureIndexPath = null,
     [property: JsonPropertyName("mails")] GameMailData? Mails = null,
     [property: JsonPropertyName("achievements")] GameAchievementData? Achievements = null,
-    [property: JsonPropertyName("roles")] GameRoleData? Roles = null
+    [property: JsonPropertyName("roles")] GameRoleData? Roles = null,
+    // 抽卡记录独立落盘到 <playerId>/gacha/record.json；这里只回传摘要，不重复携带全部条目。
+    [property: JsonPropertyName("gacha")] GameGachaSummary? Gacha = null
 );
 
 /// <summary>事件写入的聚合状态；不会通过 UI 管道发送消息正文。</summary>

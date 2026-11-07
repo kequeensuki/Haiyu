@@ -71,5 +71,12 @@ public static class ABIMemoryPack
         MemoryPackFormatterProvider.Register<GamePhantomItem>();
         MemoryPackFormatterProvider.Register<GamePhantomProp>();
         MemoryPackFormatterProvider.Register<GameValidTimeItem>();
+        MemoryPackFormatterProvider.Register<GameGachaRequest>();
+        MemoryPackFormatterProvider.Register<GameGachaData>();
+        MemoryPackFormatterProvider.Register<GameGachaQuery>();
+        MemoryPackFormatterProvider.Register<GameGachaTotals>();
+        MemoryPackFormatterProvider.Register<GameGachaPool>();
+        MemoryPackFormatterProvider.Register<GameGachaRecordItem>();
+        MemoryPackFormatterProvider.Register<GameGachaSummary>();
     }
 }
