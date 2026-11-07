@@ -17,7 +17,7 @@ internal sealed class InventoryExportModule(ExportCaptureContext context,
     {
         internal int Player = player;
         internal readonly AggregateState<CollectionSnapshot> Aggregate = new(session, PlayerDataMessageRegistry.Default.Sources.Select(id => new SourceDefinition(id, PlayerDataMessageRegistry.Default.OptionalSources.Contains(id) ? SourceRequirement.Optional : SourceRequirement.Required)),
-            snapshot => snapshot.Count, clock: clock);
+            snapshot => snapshot.Count, clock: clock, complete: snapshot => snapshot.IsComplete);
         internal AggregateSnapshot<CollectionSnapshot>? Candidate;
         internal bool Pending;
         internal bool Superseded;

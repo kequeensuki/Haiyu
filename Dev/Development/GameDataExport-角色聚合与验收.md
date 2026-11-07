@@ -21,7 +21,7 @@
 - `PhantomRoleEquipmentData`：五槽、索引 0 主声骸、0 表示空槽；装备属性对象整体替换。
 - `PbOverRoleResponse` 成功更新突破；`RoleSkillQuickLevelUpResponse` 成功且携带角色对象时更新角色；成功但未携带可选 RoleInfo 的 ACK 不创建来源、不触发失同步。失败响应无状态变化。
 
-`roles` 与 `roleEquipment` 是独立来源，装备可先于角色列表到达。共享的声骸全量/换装响应同时分派到背包与装备集合；同一来源重复注册仍拒绝。角色变更通过明确的业务变更类型进入集合；技能合并、属性替换等规则由领域集合负责，适配器只转换协议字段。集合批内失败回滚，缺失角色增量标记失同步，等待全量恢复；跨来源不承诺服务器事务一致性。声骸背包变化自动重建角色关联详情，无需复制维护另一套声骸库存。
+`roles` 与 `roleEquipment` 是独立来源，装备可先于角色列表到达。共享的声骸全量/换装响应同时分派到背包与装备集合；同一来源重复注册仍拒绝。角色变更通过明确的业务变更类型进入集合；技能合并、属性替换等规则由领域集合负责，适配器只转换协议字段。集合批内失败回滚。已有角色列表基线时，先于完整角色到达的属性/技能/节点创建待初始化标识，聚合显示 AwaitingEntities 并暂停落盘；完整角色对象到达后恢复，且不重放其之前的初始化片段。真正无效字段或缺失整个角色列表基线仍按硬失同步处理，必须重新建立完整基线；跨来源不承诺服务器事务一致性。声骸背包变化自动重建角色关联详情，无需复制维护另一套声骸库存。
 
 ## 验收
 
@@ -33,4 +33,12 @@ ABI DTO 新增角色对象，主程序和 ABI 必须配套更新。
 
 Linux .NET 10 NativeAOT 烟测发现 MemoryPack 1.21.4 在 `GameRoleEcho.Item -> GamePhantomItem` 的嵌套 `WritePackable` 静态接口分派处访问空函数指针。gdb 调用栈确认发生于 MemoryPack 序列化阶段，此前 JSON 已成功落盘。该属性通过专用 attribute 使用注册的实例 formatter (`WriteValue/ReadValue`)；仍使用原 GamePhantomItem formatter，不改变传输格式。原生烟测同时包含装备实例及空槽，覆盖该路径。
 
-验证结果（2026-11-07）：`ABIRuntime.TransportTests --game-data-export` 51 项全部通过；Linux x64 NativeAOT 加密帧烟测通过（协议消息 5481，注册编号 3910），包括角色声骸非空实例及空槽的 MemoryPack 往返。Windows 实机抓包未在此环境验证。
+验证结果（2026-11-07）：`ABIRuntime.TransportTests --game-data-export` 54 项全部通过；Linux x64 NativeAOT 加密帧烟测通过（协议消息 5481，注册编号 3910），包括角色声骸非空实例及空槽的 MemoryPack 往返。Windows 实机抓包未在此环境验证。
+
+## 真实流量回归
+
+实际登录数据中，`roleInfo.base_prop` 会重复出现相同属性 ID。客户端 `RoleInstance.RefreshRoleAttr` 调用字典赋值，后值覆盖前值；不能因重复 ID 拒绝整个角色列表。技能与声骸属性同样按客户端逐键赋值规则处理；无效 ID、重复节点标识及无效槽位仍拒绝。
+
+获得新角色时可观察到 `RolePhantomPropUpdateNotify → PbRolePropsNotify → RoleSkillNodeNotify/PbRoleSkillLevelNotify → PbRoleActiveNotify`。完整角色尚未到达时，不能凭零散字段伪造角色，也不能永久拒绝后到的 Active。领域集合声明 IsComplete，快照冻结该标记，通用聚合器暂停不完整数据的投影但继续接收有序事件。待初始化角色未补齐便停止时报告 Incomplete；硬失同步仍不能被单个 Active 绕过。
+
+新增匿名回归向量，覆盖重复字段后值覆盖、初始化先于激活、完整对象的权威替换、遗漏激活时保留旧文件、软等待与硬失同步区分。54 项导出回归及 Linux x64 NativeAOT 烟测通过。真实 JSONL 及账号资料仅在隔离分析目录回放，未加入仓库。

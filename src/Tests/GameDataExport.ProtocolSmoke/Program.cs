@@ -89,20 +89,27 @@ try
             Progress = new AchievementProgress { CurProgress = 10, TotalProgress = 10 } } }.ToByteArray()));
     capture.ConsumeRaw(Frame(WavesMessageIds.PbGetRoleListNotify, new PbGetRoleListNotify { RoleList = {
         new roleInfo { RoleId = 1, Level = 90, Skills = { new ArrayIntInt { Key = 100, Value = 1 } },
-            BaseProp = { new ArrayIntInt { Key = 1, Value = 100 } } } } }.ToByteArray()));
+            BaseProp = { new ArrayIntInt { Key = 1, Value = 50 }, new ArrayIntInt { Key = 1, Value = 100 } } } } }.ToByteArray()));
     capture.ConsumeRaw(Frame(WavesMessageIds.PhantomPutOnResponse, new PhantomPutOnResponse { EquipInfoList = {
         new RolePhantomEquipInfo { RoleId = 1, PhantomItemIncrId = { 301 } } } }.ToByteArray()));
     capture.ConsumeRaw(Frame(WavesMessageIds.PbRoleSkillLevelNotify, new PbRoleSkillLevelNotify { RoleId = 1,
         SkillInfo = new ArrayIntInt { Key = 100, Value = 10 } }.ToByteArray()));
+    capture.ConsumeRaw(Frame(WavesMessageIds.PbRolePropsNotify, new PbRolePropsNotify { RoleId = 2,
+        BaseProp = { new ArrayIntInt { Key = 1, Value = 111 }, new ArrayIntInt { Key = 1, Value = 222 } } }.ToByteArray()));
+    if (coordinator.Progress().Single(m => m.ModuleId == "inventory").Sources.Single(s => s.SourceId == "roles").State != "AwaitingEntities")
+        throw new Exception("pending role initialization must hold the snapshot");
+    capture.ConsumeRaw(Frame(WavesMessageIds.PbRoleActiveNotify, new PbRoleActiveNotify { Role = new roleInfo {
+        RoleId = 2, Level = 1, BaseProp = { new ArrayIntInt { Key = 1, Value = 200 } } } }.ToByteArray()));
     context.RememberLegacyMetadata(capture.Session);
     var modules = await coordinator.FinishAsync(new(null, false));
     var result = coordinator.LegacyResult(modules);
     var wire = MemoryPackSerializer.Serialize(result, ABIMemoryPack.Options);
     var round = MemoryPackSerializer.Deserialize<GameDataExportResult>(wire, ABIMemoryPack.Options)!;
-    if (!round.Success || round.Modules?.Length != 3 || round.EventExport?.Written != 18
-        || round.Roles?.Items.Single().Skills.Single().Value != 10
-        || round.Roles.Items.Single().Echoes[0].Item?.PhantomLevel != 10
-        || round.Roles.Items.Single().Attributes.Single().Value != 100
+    if (!round.Success || round.Modules?.Length != 3 || round.EventExport?.Written != 20
+        || round.Roles?.Items.Single(r => r.Id == 1).Skills.Single().Value != 10
+        || round.Roles.Items.Single(r => r.Id == 1).Echoes[0].Item?.PhantomLevel != 10
+        || round.Roles.Items.Single(r => r.Id == 1).Attributes.Single().Value != 100
+        || round.Roles.Items.Count != 2 || round.Roles.Items.Single(r => r.Id == 2).Attributes.Single().Value != 200
         || round.Inventory?.NormalItems.Single().Count != 2
         || round.Inventory.Weapons.Single().WeaponLevel != 40 || round.Inventory.Weapons.Single().WeaponExp != 123
         || round.Inventory.Phantoms.Single().PhantomLevel != 10 || round.Inventory.Phantoms.Single().StackCount != 3

@@ -41,10 +41,15 @@ internal sealed class RoleMessageAdapter : CollectionMessageAdapter<int, RoleSta
     internal static ProtocolMessage Required(ProtocolMessage m, int field) => m.Message(field) ?? throw new InvalidDataException("角色消息缺少对象。");
     internal static IReadOnlyList<RoleValue> Values(IEnumerable<ProtocolMessage> values)
     {
-        var result = values.Select(v => new RoleValue(v.Int32(1), v.Int32(2))).OrderBy(v => v.Id).ToArray();
-        if (result.Any(v => v.Id <= 0) || result.Select(v => v.Id).Distinct().Count() != result.Length)
-            throw new InvalidDataException("角色属性/技能标识无效或重复。");
-        return Array.AsReadOnly(result);
+        // 客户端逐键赋值：重复属性/技能 ID 合法，后值覆盖前值。
+        var result = new Dictionary<int, RoleValue>();
+        foreach (var entry in values)
+        {
+            var id = entry.Int32(1);
+            if (id <= 0) throw new InvalidDataException("角色属性/技能标识无效。");
+            result[id] = new(id, entry.Int32(2));
+        }
+        return Array.AsReadOnly(result.Values.OrderBy(v => v.Id).ToArray());
     }
     private static IReadOnlyList<RoleSkillNode> Nodes(IEnumerable<ProtocolMessage> values)
     {

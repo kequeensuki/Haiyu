@@ -119,6 +119,11 @@ internal static partial class Program
         // 未捕获新角色的新增，不能凭单技能补成一个空角色。
         f.Feed(WavesMessageIds.PbRoleSkillLevelNotify, new PbRoleSkillLevelNotify { RoleId = 2, SkillInfo = new ArrayIntInt { Key = 100, Value = 2 } });
         await f.Flush(); Equal(before, File.ReadAllText(good.OutputJsonPath!));
+        Equal("AwaitingEntities", f.Coordinator.Progress().Single().Sources.Single(s => s.SourceId == "roles").State);
+        f.Feed(WavesMessageIds.PbRoleActiveNotify, new PbRoleActiveNotify { Role = OwnedRole(2) });
+        good = await f.Flush(); Equal(2, good.Roles!.Items.Count); before = File.ReadAllText(good.OutputJsonPath!);
+        // 真正无效的字段仍是硬失同步，单个完整角色不能代替完整列表恢复。
+        f.Feed(WavesMessageIds.PbRolePropsNotify, new PbRolePropsNotify { RoleId = 1, BaseProp = { new ArrayIntInt { Key = 0, Value = 1 } } });
         f.Feed(WavesMessageIds.PbRoleActiveNotify, new PbRoleActiveNotify { Role = OwnedRole(2) });
         await f.Flush(); Equal(before, File.ReadAllText(good.OutputJsonPath!));
         f.Feed(WavesMessageIds.PbGetRoleListNotify, new PbGetRoleListNotify { RoleList = { OwnedRole(1), OwnedRole(2) } });

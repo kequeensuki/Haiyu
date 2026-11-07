@@ -4,7 +4,7 @@ internal sealed record RoleValue(int Id, int Value);
 internal sealed record RoleSkillNode(int Id, bool Active, int SkillId);
 internal sealed record RoleState(int Id, string Name, int Level, int Exp, int Breakthrough,
     IReadOnlyList<RoleValue> Skills, IReadOnlyList<RoleValue> BaseProps, IReadOnlyList<RoleValue> AddProps,
-    IReadOnlyList<RoleSkillNode> SkillNodes);
+    IReadOnlyList<RoleSkillNode> SkillNodes, bool IsInitialized = true);
 internal abstract record RoleChange;
 internal sealed record RoleReplaced(RoleState Value) : RoleChange;
 internal sealed record RoleSkillChanged(RoleValue Value) : RoleChange;

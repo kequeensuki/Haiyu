@@ -6,6 +6,7 @@ namespace Haiyu.ABI.Services.GameDataExport.Domains.Roles;
 internal sealed class RoleCollection(IEnumerable<RoleState> baseline)
     : DataCollectionBase<int, RoleState, RoleChange>(baseline, r => r.Id, id => id > 0, Comparer<int>.Default)
 {
+    internal override bool IsComplete => Items.Values.All(role => role.IsInitialized);
     public override ChangeResult Update(int key, RoleChange change)
     {
         if (change is RoleReplaced full)
@@ -13,12 +14,20 @@ internal sealed class RoleCollection(IEnumerable<RoleState> baseline)
             var value = full.Value;
             // RoleInstance.RefreshRoleInfo 逐技能赋值，不清空未出现的技能。
             // 明确的全量基线通过构造新集合替换，不经过此增量路径。
-            if (Items.TryGetValue(key, out var previous))
+            if (Items.TryGetValue(key, out var previous) && previous.IsInitialized)
                 value = value with { Skills = MergeValues(previous.Skills, value.Skills) };
             return Replace(key, value);
         }
-        return change is RoleAttributesChanged { IgnoreMissing: true } && !Items.ContainsKey(key)
-            ? ChangeResult.Unchanged : base.Update(key, change);
+        if (key <= 0) return ChangeResult.Invalid("invalid_role_id");
+        if (!Items.ContainsKey(key))
+        {
+            if (change is RoleAttributesChanged { IgnoreMissing: true }) return ChangeResult.Unchanged;
+            // 正常获得角色时，属性/技能/节点会先于 Active 到达。保留待初始化标识，
+            // 阻止不完整快照落盘；完整角色对象到达后才能解除，不能凭零散字段伪造拥有角色。
+            var pending = new RoleState(key, "", 0, 0, 0, [], [], [], [], IsInitialized: false);
+            return Replace(key, Merge(pending, change));
+        }
+        return base.Update(key, change);
     }
     protected override RoleState Merge(RoleState current, RoleChange change) => change switch
     {
@@ -35,7 +44,7 @@ internal sealed class RoleCollection(IEnumerable<RoleState> baseline)
         _ => throw new InvalidDataException("不支持的角色变更。")
     };
     protected override bool Equivalent(RoleState a, RoleState b) =>
-        a.Id == b.Id && a.Name == b.Name && a.Level == b.Level && a.Exp == b.Exp && a.Breakthrough == b.Breakthrough
+        a.IsInitialized == b.IsInitialized && a.Id == b.Id && a.Name == b.Name && a.Level == b.Level && a.Exp == b.Exp && a.Breakthrough == b.Breakthrough
         && a.Skills.SequenceEqual(b.Skills) && a.BaseProps.SequenceEqual(b.BaseProps)
         && a.AddProps.SequenceEqual(b.AddProps) && a.SkillNodes.SequenceEqual(b.SkillNodes);
     private static IReadOnlyList<RoleValue> MergeValues(IReadOnlyList<RoleValue> current, IEnumerable<RoleValue> patch) =>

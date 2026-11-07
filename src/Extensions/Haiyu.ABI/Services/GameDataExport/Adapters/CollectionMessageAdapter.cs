@@ -58,7 +58,7 @@ internal abstract class CollectionMessageAdapter<TKey, TEntity, TChange>(string 
     private CollectionSnapshot<TEntity> Freeze(DataCollectionBase<TKey, TEntity, TChange> collection)
     {
         var items = collection.Snapshot();
-        return new(items, 64 + items.Sum(item => 48 + retainedBytes(item)));
+        return new(items, 64 + items.Sum(item => 48 + retainedBytes(item)), collection.IsComplete);
     }
     protected static ChangeResult Each<T>(IEnumerable<T> values, Func<T, ChangeResult> apply)
     {

@@ -36,6 +36,8 @@ internal abstract class DataCollectionBase<TKey, TEntity, TChange> : IDataCollec
     public virtual ChangeResult Remove(TKey key) =>
         Items.Remove(key) ? ChangeResult.Changed : ChangeResult.Unchanged;
 
+    internal virtual bool IsComplete => true;
+
     protected abstract TEntity Merge(TEntity current, TChange change);
     protected virtual bool Equivalent(TEntity first, TEntity second) => EqualityComparer<TEntity>.Default.Equals(first, second);
     protected ChangeResult Replace(TKey key, TEntity value)

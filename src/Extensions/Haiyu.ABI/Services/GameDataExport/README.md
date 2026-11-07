@@ -62,3 +62,5 @@
 `AchievementCollection` 将成就、成就组、服务器汇总分别放入独立键空间。完成时间和 isReceive 独立保存，领奖规则由领域状态解释，进度满不自动当成领奖。初始 InfoResponse 建基线，部分更新合并，确认响应不猜测领奖；新条目可按客户端懒创建语义新增。`achievements` 与邮件一样自动并入玩家最新文件，未同步时不伪造空数据，重登后重新收集。协议依据及字段见 `Dev/Development/GameDataExport-成就聚合与验收.md`。
 
 角色导出采用 `Domains/Roles` / `Adapters/Roles`，账号角色与声骸装备独立建立基线。导出映射按声骸实例 ID 联结现有背包，确保装备详情跟随升级、调谐和换装。`roles.items` 包含技能实际等级、技能节点、服务器属性与五槽声骸；属性保持协议整数单位。详细协议依据、缺失数据状态及验收见 `Dev/Development/GameDataExport-角色聚合与验收.md`。同一下行消息可分派给不同来源，重复注册同一来源仍会拒绝。
+
+集合可以声明实体初始化未完成，冻结快照通过 `IsComplete` 携带完成状态。聚合器在 `AwaitingEntities` 期间保留上次完整文件，并继续接收有序消息；完整实体到齐后恢复。该状态与 SourceState 的硬失同步分开，后者仍必须通过完整基线恢复。
