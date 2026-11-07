@@ -7,7 +7,8 @@
 - 明确不在本次范围内的内容及依据：
 - Haiyu 根目录、分支、起始 SHA：
 - 原有未提交改动及保留方式：
-- 参考源码/配置仓库路径、分支、提交：
+- 参考源码路径（Windows 默认 `%USERPROFILE%/Desktop/WutheringMod/DecompiledSource`）、所属仓库提交：
+- 数据/配置仓库路径（Windows 默认 `%USERPROFILE%/Desktop/WutheringWaves_Data`）、分支与提交（本任务系列 `3.7`，需核对）：
 - 已读约束文件：
 - .NET SDK、宿主 OS/RID、原生工具链：
 - 日志与真实数据的仓库外目录：

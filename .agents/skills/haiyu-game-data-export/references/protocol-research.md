@@ -11,7 +11,16 @@
 - 需要静态配置时再定位数据仓库的实际分支与提交。配置描述奖励/名称，不自动表示玩家已经获得它。
 - 用户真实 JSONL、capture-index、manifest：本次实际出现的载荷和顺序。
 
-参考源码可能位于相邻 WutheringMod 的 `DecompiledSource/Aki.Game`，但不要假定路径或提交永远如此。此目录是只读参考，不在那里修改游戏文件或放临时脚本。
+用户约定的 Windows 默认路径如下，优先到这些位置查找：
+
+| 资料 | 默认路径 | 用途 |
+|---|---|---|
+| 游戏源码 | `%USERPROFILE%/Desktop/WutheringMod/DecompiledSource` | `Aki.Game` 查业务注册、回调与状态合并；`Aki.Protocol` 查协议实现 |
+| 游戏各种数据及配置 | `%USERPROFILE%/Desktop/WutheringWaves_Data` | 查物品、角色、技能、属性、奖励等静态配置；本任务系列使用 `3.7` 分支，仍须核对实际版本与提交 |
+
+`%USERPROFILE%` 是 Windows 环境变量写法；PowerShell 命令中使用 `$env:USERPROFILE` 展开，例如 `Join-Path $env:USERPROFILE 'Desktop/WutheringMod/DecompiledSource'`。对含空格的实际路径正确加引号。
+
+若路径不存在或运行在云端/Linux，才搜索对应仓库位置，不将 Windows 默认路径或云端路径机械套用到其他机器。源码和数据均作为只读参考；不在那里修改文件或放临时脚本，先读取对应仓库的 `AGENTS.md`。
 
 从关键词和调用方双向搜索，使用 `rg`；命中太多就缩小文件/方法或落到仓库外日志分段读。**被截断的搜索结果不能证明“没有其他消息”。**
 
